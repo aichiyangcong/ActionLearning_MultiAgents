@@ -1,0 +1,3 @@
+{"turn": 1, "user_input": "问题1", "coach_output": "{\"score\": 96, \"pass\": true}", "summary": "回答1", "timestamp": "2026-03-01T00:30:16.527150"}
+{"turn": 2, "user_input": "问题2", "coach_output": "{\"score\": 96, \"pass\": true}", "summary": "回答2", "timestamp": "2026-03-01T00:30:16.527991"}
+{"turn": 3, "user_input": "问题3", "coach_output": "{\"score\": 96, \"pass\": true}", "summary": "回答3", "timestamp": "2026-03-01T00:30:16.528856"}

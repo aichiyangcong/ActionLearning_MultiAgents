@@ -1,0 +1,1 @@
+{"turn": 1, "user_input": "员工离职率高", "coach_output": "{\"score\": 89, \"pass\": false, \"feedback\": \"未达到 95 分阈值\"}", "summary": "当你思考团队的变化时，什么让你印象深刻？", "timestamp": "2026-03-01T00:30:16.494527"}
