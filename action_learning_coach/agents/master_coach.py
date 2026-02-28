@@ -1,5 +1,5 @@
 """
-[INPUT]: 依赖 core/autogen_adapter 的 ConversableAgent，依赖 prompts/coach_prompt 的 COACH_SYSTEM_MESSAGE，依赖 core/config 的 LLMConfig
+[INPUT]: 依赖 autogen 的 ConversableAgent，依赖 prompts/coach_prompt 的 COACH_SYSTEM_MESSAGE，依赖 core/config 的 LLMConfig
 [OUTPUT]: 对外提供 WIALMasterCoach 类，generate_question 方法，get_agent 方法
 [POS]: agents 模块的核心组件，负责生成开放式提问，使用隐式 ReAct 模式
 [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
@@ -7,7 +7,7 @@
 
 import json
 from typing import Dict, Any
-from core.autogen_adapter import ConversableAgent
+from autogen import ConversableAgent
 from prompts.coach_prompt import COACH_SYSTEM_MESSAGE
 from core.config import LLMConfig
 
@@ -51,27 +51,29 @@ class WIALMasterCoach:
             包含 question 和 reasoning 的字典
         """
         # 调用 LLM 生成问题
-        response = self._agent.generate_reply(
+        raw = self._agent.generate_reply(
             messages=[{"role": "user", "content": user_input}]
         )
 
+        # 统一为字符串 (AG2 可能返回 str / dict / None)
+        if raw is None:
+            return {"question": "", "reasoning": "LLM 未返回响应"}
+        if isinstance(raw, dict):
+            return raw
+        response = str(raw)
+
         # 解析 JSON 响应 - 处理 markdown 代码块包裹的情况
         try:
-            # 尝试直接解析
             result = json.loads(response)
             return result
         except json.JSONDecodeError:
-            # 尝试提取 markdown 代码块中的 JSON
             import re
             json_match = re.search(r'```(?:json)?\s*\n(.*?)\n```', response, re.DOTALL)
             if json_match:
                 try:
-                    result = json.loads(json_match.group(1))
-                    return result
+                    return json.loads(json_match.group(1))
                 except json.JSONDecodeError:
                     pass
-
-            # 如果仍然失败，返回原始响应
             return {
                 "question": response,
                 "reasoning": "LLM 未返回标准 JSON 格式",

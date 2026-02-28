@@ -1,5 +1,5 @@
 """
-[INPUT]: 依赖 core/autogen_adapter 的 ConversableAgent，依赖 prompts/evaluator_prompt 的 EVALUATOR_SYSTEM_MESSAGE，依赖 core/config 的 LLMConfig
+[INPUT]: 依赖 autogen 的 ConversableAgent，依赖 prompts/evaluator_prompt 的 EVALUATOR_SYSTEM_MESSAGE，依赖 core/config 的 LLMConfig
 [OUTPUT]: 对外提供 StrictEvaluator 类，evaluate 方法，get_agent 方法
 [POS]: agents 模块的审查组件，负责质量把关，三维评分体系
 [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
@@ -7,7 +7,7 @@
 
 import json
 from typing import Dict, Any
-from core.autogen_adapter import ConversableAgent
+from autogen import ConversableAgent
 from prompts.evaluator_prompt import EVALUATOR_SYSTEM_MESSAGE
 from core.config import LLMConfig
 
@@ -52,19 +52,27 @@ class StrictEvaluator:
             评估结果字典: {score, breakdown, pass, feedback}
         """
         # 调用 LLM 进行评估
-        response = self._agent.generate_reply(
+        raw = self._agent.generate_reply(
             messages=[{"role": "user", "content": f"请评估以下问题:\n\n{question}"}]
         )
 
+        # 统一为字符串 (AG2 可能返回 str / dict / None)
+        if raw is None:
+            return {
+                "score": 0, "breakdown": {"openness": 0, "neutrality": 0, "depth": 0},
+                "pass": False, "feedback": "LLM 未返回响应",
+            }
+        if isinstance(raw, dict):
+            raw["pass"] = raw.get("score", 0) >= self.pass_threshold
+            return raw
+        response = str(raw)
+
         # 解析 JSON 响应 - 处理 markdown 代码块包裹的情况
         try:
-            # 尝试直接解析
             result = json.loads(response)
-            # 确保 pass 字段正确
             result["pass"] = result.get("score", 0) >= self.pass_threshold
             return result
         except json.JSONDecodeError:
-            # 尝试提取 markdown 代码块中的 JSON
             import re
             json_match = re.search(r'```(?:json)?\s*\n(.*?)\n```', response, re.DOTALL)
             if json_match:
@@ -74,8 +82,6 @@ class StrictEvaluator:
                     return result
                 except json.JSONDecodeError:
                     pass
-
-            # 如果仍然失败，返回默认失败结果
             return {
                 "score": 0,
                 "breakdown": {"openness": 0, "neutrality": 0, "depth": 0},

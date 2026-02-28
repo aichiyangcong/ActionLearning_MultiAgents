@@ -1,14 +1,14 @@
 """
-[INPUT]: 依赖 agents 模块 (WIALMasterCoach, StrictEvaluator)，依赖 core 模块 (get_llm_config)，依赖 utils/logger
-[OUTPUT]: Terminal 交互入口，支持 Mock 和真实 LLM 双模式
-[POS]: 项目入口，编排整体流程，自动检测 API Key 切换模式
+[INPUT]: 依赖 core/orchestrator (Orchestrator, TurnResult)，依赖 core (get_llm_config)，依赖 utils/logger
+[OUTPUT]: Terminal 交互入口，支持 Mock 和 AG2 Orchestrator 双模式
+[POS]: 项目入口，真实模式走 AG2 编排，mock 模式使用模拟数据
 [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 """
 
 import sys
 import time
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -18,7 +18,7 @@ from datetime import datetime
 # ============================================================================
 
 try:
-    from agents import WIALMasterCoach, StrictEvaluator
+    from core.orchestrator import Orchestrator, TurnResult
     from core import get_llm_config
     from utils.logger import get_logger
     REAL_AGENT_AVAILABLE = True
@@ -26,7 +26,7 @@ try:
 except ImportError as e:
     REAL_AGENT_AVAILABLE = False
     logger = None
-    print(f"⚠️  真实 Agent 不可用，将使用 mock 模式: {e}")
+    print(f"Warning: Agent modules unavailable, mock mode only: {e}")
 
 
 # ============================================================================
@@ -56,25 +56,25 @@ class ConversationHistory:
             user_input=user_input,
             final_question=final_question,
             review_rounds=review_rounds,
-            final_score=final_score
+            final_score=final_score,
         )
         self.records.append(record)
 
     def show(self):
         """显示对话历史"""
         if not self.records:
-            print("\n📋 对话历史: 暂无记录\n")
+            print("\n  No conversation records yet.\n")
             return
 
         print("\n" + "=" * 70)
-        print("📋 对话历史".center(70))
+        print("  Conversation History".center(70))
         print("=" * 70)
 
         for i, record in enumerate(self.records, 1):
             print(f"\n[{i}] {record.timestamp}")
-            print(f"  用户输入: {record.user_input[:50]}{'...' if len(record.user_input) > 50 else ''}")
-            print(f"  最终问题: {record.final_question[:50]}{'...' if len(record.final_question) > 50 else ''}")
-            print(f"  审查轮次: {record.review_rounds} | 最终评分: {record.final_score}/100")
+            print(f"  Input:    {record.user_input[:50]}{'...' if len(record.user_input) > 50 else ''}")
+            print(f"  Question: {record.final_question[:50]}{'...' if len(record.final_question) > 50 else ''}")
+            print(f"  Rounds: {record.review_rounds} | Score: {record.final_score}/100")
 
         print("\n" + "=" * 70 + "\n")
 
@@ -135,7 +135,7 @@ def stream_text(text: str, delay: float = 0.02):
 
 def stream_thinking(agent_name: str, duration: float = 0.8):
     """流式显示思考动画"""
-    sys.stdout.write(f"\n[{agent_name} 思考中")
+    sys.stdout.write(f"\n[{agent_name} thinking")
     sys.stdout.flush()
 
     dots = 0
@@ -161,11 +161,11 @@ def stream_thinking(agent_name: str, duration: float = 0.8):
 def print_header():
     """打印欢迎界面"""
     print("\n" + "=" * 70)
-    print("行动学习 AI 陪练系统 (Phase 1 MVP)".center(70))
+    print("Action Learning AI Coach (Phase 2)".center(70))
     print("=" * 70)
-    print("\n💡 提示:")
-    print("  - 输入 'quit' 或 'exit' 退出系统")
-    print("  - 输入 'history' 查看对话历史\n")
+    print("\n  Commands:")
+    print("  - 'quit' or 'exit' to leave")
+    print("  - 'history' to view conversation history\n")
 
 
 def print_separator(char="-", length=70):
@@ -173,146 +173,73 @@ def print_separator(char="-", length=70):
     print(char * length)
 
 
-def print_thinking(agent_name: str):
-    """打印思考状态 (非流式版本，保留用于快速模式)"""
-    print(f"\n[{agent_name} 思考中...]")
-
-
 def print_draft(draft: str, streaming: bool = True):
     """打印问题草案"""
     if streaming:
-        sys.stdout.write("\n📝 问题草案: \"")
+        sys.stdout.write('\n  Draft: "')
         sys.stdout.flush()
-        stream_text(draft + "\"", delay=0.015)
+        stream_text(draft + '"', delay=0.015)
     else:
-        print(f"\n📝 问题草案: \"{draft}\"")
+        print(f'\n  Draft: "{draft}"')
 
 
 def print_evaluation(round_num: int, score: int, feedback: Dict, passed: bool):
     """打印评估结果"""
-    print(f"\n[Evaluator 审查中... 第 {round_num} 轮]")
-    print(f"评分: {score}/100 {'✅ 通过' if passed else '❌ 未通过'}")
+    status = "PASS" if passed else "FAIL"
+    print(f"\n[Evaluator] Round {round_num} | Score: {score}/100 | {status}")
 
     for dimension, details in feedback.items():
-        status = "✓" if details["score"] >= details["max"] * 0.9 else "✗"
-        print(f"  {status} {dimension}: {details['score']}/{details['max']} - {details['comment']}")
+        mark = "+" if details["score"] >= details["max"] * 0.9 else "-"
+        print(f"  {mark} {dimension}: {details['score']}/{details['max']} - {details['comment']}")
 
 
 def print_final_question(question: str):
     """打印最终问题"""
     print("\n" + "=" * 70)
-    print("✨ 最终问题:")
-    print(f"\n  \"{question}\"\n")
+    print("  Final Question:")
+    print(f'\n  "{question}"\n')
     print("=" * 70)
 
 
 def get_user_input() -> str:
     """获取用户输入"""
-    print("\n请描述您的业务问题:")
+    print("\nDescribe your business problem:")
     user_input = input("> ").strip()
     return user_input
 
 
 # ============================================================================
-# Real Review Loop - 真实审查循环
+# Orchestrator Review Loop - AG2 编排审查循环
 # ============================================================================
 
-def real_review_loop(
+def orchestrator_review_loop(
     user_input: str,
-    history: "ConversationHistory",
-    coach: "WIALMasterCoach",
-    evaluator: "StrictEvaluator",
-    max_rounds: int = 5,
-    streaming: bool = True,
+    history: ConversationHistory,
+    orchestrator: Orchestrator,
 ):
-    """真实审查循环流程"""
+    """通过 Orchestrator (AG2 编排) 执行审查循环"""
     print_separator()
-    print(f"\n📥 收到输入: \"{user_input}\"")
+    print(f'\n  Input: "{user_input}"')
 
-    final_question = ""
-    final_score = 0
-    review_rounds = 0
-    best_question = ""
-    best_score = 0
+    try:
+        result = orchestrator.run_turn(user_input)
 
-    for round_num in range(1, max_rounds + 1):
-        review_rounds = round_num
+        question = result.question
+        messages = result.messages
+        n_messages = len(messages)
 
-        # Coach 生成问题
-        if streaming:
-            stream_thinking("Coach", duration=1.0)
+        if question:
+            print_final_question(question)
         else:
-            print_thinking("Coach")
+            print("\n  Warning: No question generated.")
 
-        try:
-            coach_result = coach.generate_question(user_input)
-            question = coach_result.get("question", "")
+        history.add(user_input, question, n_messages, 0)
 
-            if not question:
-                print("\n⚠️  Coach 未生成有效问题，跳过本轮")
-                continue
-
-            print_draft(question, streaming=streaming)
-
-            # Evaluator 审查
-            eval_result = evaluator.evaluate(question)
-            score = eval_result.get("score", 0)
-            breakdown = eval_result.get("breakdown", {})
-            passed = eval_result.get("pass", False)
-            feedback_text = eval_result.get("feedback", "")
-
-            # 转换为 UI 格式
-            feedback = {
-                "开放性": {
-                    "score": breakdown.get("openness", 0),
-                    "max": 40,
-                    "comment": feedback_text.split("开放性")[1].split("\n")[0] if "开放性" in feedback_text else ""
-                },
-                "无诱导性": {
-                    "score": breakdown.get("neutrality", 0),
-                    "max": 40,
-                    "comment": feedback_text.split("无诱导性")[1].split("\n")[0] if "无诱导性" in feedback_text else ""
-                },
-                "反思深度": {
-                    "score": breakdown.get("depth", 0),
-                    "max": 20,
-                    "comment": feedback_text.split("反思深度")[1].split("\n")[0] if "反思深度" in feedback_text else ""
-                }
-            }
-
-            print_evaluation(round_num, score, feedback, passed)
-
-            # 记录最佳版本
-            if score > best_score:
-                best_score = score
-                best_question = question
-
-            if passed:
-                final_question = question
-                final_score = score
-                print_final_question(question)
-                break
-            else:
-                print("\n[Coach 重写中...]")
-                if streaming:
-                    time.sleep(0.5)
-                # 更新 user_input 加入反馈
-                user_input = f"{user_input}\n\n上一轮问题: {question}\n评分: {score}/100\n反馈: {feedback_text}"
-
-        except Exception as e:
-            logger.error(f"审查循环出错: {e}")
-            print(f"\n⚠️  审查出错: {e}")
-            break
-
-    # 如果未通过，输出最佳版本
-    if not final_question and best_question:
-        print(f"\n⚠️  达到最大轮次 ({max_rounds})，输出最佳版本 (评分: {best_score}/100)")
-        final_question = best_question
-        final_score = best_score
-        print_final_question(best_question)
-
-    # 记录对话历史
-    history.add(user_input.split("\n")[0], final_question, review_rounds, final_score)
+    except Exception as e:
+        if logger:
+            logger.error(f"Orchestrator error: {e}")
+        print(f"\n  Error: {e}")
+        history.add(user_input, "", 0, 0)
 
 
 # ============================================================================
@@ -322,12 +249,10 @@ def real_review_loop(
 def mock_review_loop(user_input: str, history: ConversationHistory, streaming: bool = True):
     """模拟审查循环流程"""
     print_separator()
-    print(f"\n📥 收到输入: \"{user_input}\"")
+    print(f'\n  Input: "{user_input}"')
 
     if streaming:
         stream_thinking("Coach", duration=1.0)
-    else:
-        print_thinking("Coach")
 
     final_question = ""
     final_score = 0
@@ -349,11 +274,10 @@ def mock_review_loop(user_input: str, history: ConversationHistory, streaming: b
             print_final_question(round_data["draft"])
             break
         else:
-            print("\n[Coach 重写中...]")
+            print("\n[Coach rewriting...]")
             if streaming:
                 time.sleep(0.5)
 
-    # 记录对话历史
     history.add(user_input, final_question, review_rounds, final_score)
 
 
@@ -375,50 +299,46 @@ def main(use_real_agent: bool = None):
     if use_real_agent is None:
         use_real_agent = REAL_AGENT_AVAILABLE and os.getenv("ANTHROPIC_API_KEY")
 
-    # 初始化真实 Agent (如果需要)
-    coach = None
-    evaluator = None
+    # 初始化 Orchestrator (如果需要)
+    orchestrator = None
     if use_real_agent:
         try:
-            # Coach 使用 Sonnet 模型
-            coach_config = get_llm_config("coach")
-            coach = WIALMasterCoach(coach_config)
+            orchestrator = Orchestrator()
+            orchestrator.create_session()
 
-            # Evaluator 使用 Opus 模型
-            evaluator_config = get_llm_config("evaluator")
-            evaluator = StrictEvaluator(evaluator_config)
-
-            print(f"✅ 真实 Agent 模式已启用")
-            print(f"   Coach: {coach_config.model}")
-            print(f"   Evaluator: {evaluator_config.model}\n")
-            logger.info(f"真实 Agent 模式已启用 - Coach: {coach_config.model}, Evaluator: {evaluator_config.model}")
+            coach_model = orchestrator._coach_config.model
+            evaluator_model = orchestrator._evaluator_config.model
+            observer_model = orchestrator._observer_config.model if orchestrator._observer_config else "mock"
+            print(f"  AG2 Orchestrator mode enabled")
+            print(f"  Coach: {coach_model}")
+            print(f"  Evaluator: {evaluator_model}")
+            print(f"  Observer: {observer_model}\n")
+            if logger:
+                logger.info("AG2 Orchestrator: coach=%s, evaluator=%s", coach_model, evaluator_model)
         except Exception as e:
-            print(f"⚠️  真实 Agent 初始化失败，切换到 mock 模式: {e}\n")
+            print(f"  Orchestrator init failed, falling back to mock: {e}\n")
             use_real_agent = False
+            orchestrator = None
     else:
-        print("ℹ️  Mock 模式已启用 (使用模拟数据)\n")
+        print("  Mock mode enabled (simulated data)\n")
 
     while True:
         user_input = get_user_input()
 
-        # 退出机制
         if user_input.lower() in ["quit", "exit", "q"]:
-            print("\n👋 感谢使用，再见！\n")
+            print("\n  Goodbye!\n")
             sys.exit(0)
 
-        # 查看历史
         if user_input.lower() == "history":
             history.show()
             continue
 
-        # 空输入处理
         if not user_input:
-            print("⚠️  输入不能为空，请重新输入")
+            print("  Input cannot be empty.")
             continue
 
-        # 执行审查循环
-        if use_real_agent and coach and evaluator:
-            real_review_loop(user_input, history, coach, evaluator)
+        if use_real_agent and orchestrator:
+            orchestrator_review_loop(user_input, history, orchestrator)
         else:
             mock_review_loop(user_input, history)
 

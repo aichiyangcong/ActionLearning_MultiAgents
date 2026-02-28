@@ -1,13 +1,13 @@
 """
-[INPUT]: 无外部依赖
-[OUTPUT]: 对外提供 agents 模块的公共接口
-[POS]: agents 模块的入口，统一导出 WIALMasterCoach, StrictEvaluator
+[INPUT]: 依赖 agents/master_coach, agents/evaluator, agents/user_proxy, agents/observer
+[OUTPUT]: 对外提供 WIALMasterCoach, StrictEvaluator, UserProxy, observe_turn
+[POS]: agents 模块的入口，统一导出所有 Agent 类和函数
 [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 """
 
 from agents.master_coach import WIALMasterCoach
 from agents.evaluator import StrictEvaluator
-# UserProxy 暂时不导出，因为它依赖旧版 API 且当前未使用
-# from .user_proxy import UserProxy
+from agents.user_proxy import UserProxy
+from agents.observer import observe_turn
 
-__all__ = ["WIALMasterCoach", "StrictEvaluator"]
+__all__ = ["WIALMasterCoach", "StrictEvaluator", "UserProxy", "observe_turn"]
