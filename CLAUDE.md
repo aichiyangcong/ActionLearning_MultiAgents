@@ -273,30 +273,78 @@ Keep the map aligned with the terrain, or the terrain will be lost.
 </INVOCATION>
 
 # 项目结构 - Action Learning Coach
-Python 3.10+ + AG2 (AutoGen) 0.2.3+ + OpenAI API
+Python 3.10+ + AG2 (AutoGen) 0.2.3+ + Anthropic Claude API
+
+## 项目状态
+
+**当前阶段**: Phase 2 准备启动
+**Phase 1 完成**: ✅ commit `c7cee5a` (2026-02-28)
+**详细进度**: 见 `doc/project_status.md`
+
+### Phase 1 技术债（Phase 2 需解决）
+
+1. **AutoGen 是假的** — `core/autogen_adapter.py` 用 httpx 绕过 AG2 框架
+2. **Nested Chat 是空架子** — `core/nested_chat.py` 从未被调用
+3. **无状态** — 跨轮记忆靠字符串拼接，无持久化
+
+详见 `doc/phase1_technical_debt.md`
+
+### Phase 2 目标
+
+1. 迁移到真实 AG2 框架（`DefaultPattern` + Handoffs）
+2. 实现三层记忆系统（L1/L2/L3 + Raw）
+3. 实现 Observer Agent（`FunctionTarget`，轻量 LLM）
+4. 实现 AI 驱动的双轨 FSM（Business ↔ Reflection）
+
+详见 `doc/phase2_implementation_plan.md`
+
+---
 
 <directory>
 action_learning_coach/ - 核心应用模块 (6子目录: agents, core, prompts, utils, tests, main.py)
-doc/ - 项目文档 (phase1_mvp_plan.md 等)
+doc/ - 项目文档 (project_status.md, phase2_implementation_plan.md, phase1_technical_debt.md 等)
 ag2/ - AG2 框架源码 (子模块)
 pictures/ - 截图资源
+data/ - 运行时数据 (sessions/, learners/) [Phase 2 新增]
 </directory>
 
 <config>
 AGENTS.md - 团队角色定义
 CLAUDE.md - 项目规范与 GEB 协议
+.env - 环境变量 (ANTHROPIC_API_KEY 等)
+requirements.txt - Python 依赖
 </config>
+
+---
+
+## 开发环境
 
 - 现在是在Linux的环境中开发
 - Python虚拟环境位置: .venv。默认已经有了，但如果还没有环境，那么就创建一个python3.12的虚拟环境。
 - 运行Python脚本: 使用虚拟环境的Python，而不是直接使用 python 命令
 - 安装Python包: 添加镜像配置以加速: `-i http://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com`
 - 如果需要安装新的python包,安装成功后,在 requirements.txt 中添加记录
-- .env文件已经存在,包含 GEMINI_API_KEY 等配置
+- .env文件已经存在,包含 ANTHROPIC_API_KEY 等配置
+
+---
+
+## 工作流程
 
 - 需要搜索函数包、API等文档，借助 context7 工具
-
 - 做完一项任务后，不要主动创建总结文档，需要时，我会明确让你创建
+- 架构变更必须同步更新 CLAUDE.md（GEB 协议）
+
+---
+
+## 关键文档索引
+
+- `doc/project_status.md` — 项目进度状态（Phase 1/2/3/4）
+- `doc/phase2_implementation_plan.md` — Phase 2 实施计划（含角色分工）
+- `doc/phase1_technical_debt.md` — Phase 1 技术债详细分析
+- `doc/architecture_design.md` — 核心架构与工程说明书
+- `doc/technical_architecture_cto_perspective.md` — CTO 技术架构方案
+- `doc/记忆机制的参考.md` — ChatGPT + OpenClaw 记忆系统参考
+- `AGENTS.md` — 团队角色定义（Team Lead, Architect, Backend, Logic Engineer, Tester）
 
 [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 
