@@ -73,6 +73,7 @@ def get_llm_config(agent_type: str = "default") -> LLMConfig:
     model_map = {
         "coach": os.getenv("COACH_MODEL", "claude-sonnet-4-6"),
         "evaluator": os.getenv("EVALUATOR_MODEL", "claude-opus-4-6"),
+        "observer": os.getenv("OBSERVER_MODEL", "claude-haiku-4-5"),
         "default": os.getenv("COACH_MODEL", "claude-sonnet-4-6"),
     }
 

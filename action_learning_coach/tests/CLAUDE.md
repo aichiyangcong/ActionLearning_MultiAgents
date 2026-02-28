@@ -7,29 +7,23 @@
 - test_coach.py: Coach 测试，问题生成质量验证，开放式问题特征检测，错误处理测试
 - test_review_loop.py: 审查循环测试，Actor-Critic 模式验证，最大 5 轮限制，通过阈值 95 分，性能测试
 - test_e2e.py: 端到端集成测试，Mock 模式完整流程，真实模式流程，验收标准检查，系统稳定性测试
+- test_phase2a_integration.py: Phase 2a 集成测试 (42 用例)，验证 AG2 编排骨架 + Coach-Evaluator 审查循环场景
+- test_phase2c_observer.py: Phase 2c Observer 测试 (28 用例)，验证 Observer config/prompt/FunctionTarget 签名/逻辑/Orchestrator 集成/认知状态同步
 
 ## 测试统计
-- 总测试用例: 41
-- Mock 模式: 24 个（100% 通过）
-- 真实模式: 17 个（需 API Key）
-- 代码行数: 850+ 行
-
-## 测试覆盖
-- ✅ 诱导性问题检测
-- ✅ 审查循环逻辑
-- ✅ 问题质量评分
-- ✅ 端到端集成
-- ✅ 验收标准检查
-- ⚠️ 性能测试（需 API Key）
+- 总测试用例: 111
+- Phase 1 Mock 模式: 24 个（100% 通过）
+- Phase 1 真实模式: 17 个（需 API Key）
+- Phase 2a 集成测试: 42 个（100% 通过，无需 API Key）
+- Phase 2c Observer 测试: 28 个（100% 通过，无需 API Key）
 
 ## 运行方式
 ```bash
-# Mock 模式（无需 API Key）
-pytest action_learning_coach/tests/ -v
+# 全部测试
+PYTHONPATH=action_learning_coach .venv/bin/python -m pytest action_learning_coach/tests/ -v
 
-# 真实模式（需 API Key）
-export OPENAI_API_KEY=your_key
-pytest action_learning_coach/tests/ -v
+# 仅 Phase 2c Observer 测试
+PYTHONPATH=action_learning_coach .venv/bin/python -m pytest action_learning_coach/tests/test_phase2c_observer.py -v
 ```
 
 [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
