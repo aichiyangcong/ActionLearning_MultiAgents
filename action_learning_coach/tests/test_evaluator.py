@@ -185,5 +185,29 @@ class TestEdgeCases:
         assert result.get("score", 100) < 95, "空问题评分应 <95"
 
 
+class TestStructuredReplyEvaluation:
+    """测试新的结构化催化师回复评审输入"""
+
+    def test_format_review_input_with_structured_reply(self):
+        """应把共情和两个问题完整展开给 Evaluator"""
+        review_input = StrictEvaluator._format_review_input({
+            "acknowledgment": "我听到这件事确实在消耗团队。",
+            "questions": [
+                "当你看到士气下滑时，最明显的变化是什么？",
+                "在这些变化背后，你认为他们最难承受的是什么？",
+            ],
+        })
+
+        assert "简短共情" in review_input
+        assert "问题1" in review_input
+        assert "问题2" in review_input
+
+    def test_normalize_coach_reply_supports_legacy_question(self):
+        """旧字符串问题应被兼容成新评审输入"""
+        payload = StrictEvaluator._normalize_coach_reply("你观察到了什么？")
+        assert payload["acknowledgment"] == ""
+        assert payload["questions"] == ["你观察到了什么？"]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])

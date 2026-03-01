@@ -8,6 +8,7 @@
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 try:
@@ -20,7 +21,18 @@ except ImportError:
 # ============================================================
 # Load Environment Variables
 # ============================================================
-load_dotenv()
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_ENV_FILE = PACKAGE_ROOT / ".env"
+
+
+def _load_environment_variables() -> None:
+    """优先加载包目录 .env，再加载当前工作目录 .env。"""
+    if PACKAGE_ENV_FILE.exists():
+        load_dotenv(PACKAGE_ENV_FILE)
+    load_dotenv()
+
+
+_load_environment_variables()
 
 
 # ============================================================

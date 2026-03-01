@@ -158,5 +158,40 @@ class TestErrorHandling:
         assert "question" in result, "应包含 question 字段"
 
 
+class TestStructuredCoachReply:
+    """测试新的结构化催化师回复契约"""
+
+    def test_normalize_reply_payload_backfills_ack_and_second_question(self):
+        """旧 question 结构应被兼容成新结构"""
+        payload = WIALMasterCoach._normalize_reply_payload({
+            "question": "你最担心的是什么",
+            "reasoning": "兼容旧格式",
+        })
+
+        assert payload["acknowledgment"] != ""
+        assert len(payload["questions"]) == 2
+        assert payload["questions"][0].endswith(("?", "？"))
+        assert payload["question"] == payload["questions"][0]
+
+    def test_build_thread_context_text_includes_previous_turns(self):
+        """线程上下文应被压缩进提示词片段"""
+        context_text = WIALMasterCoach._build_thread_context_text({
+            "original_problem": "销售团队士气下降",
+            "last_coach_reply": {
+                "acknowledgment": "我听到团队现在承压很大。",
+                "questions": ["你观察到了什么？", "他们最在意的是什么？"],
+            },
+            "recent_turns": [
+                {"user_input": "他们经常被客户拒绝"},
+            ],
+            "open_threads": ["你观察到了什么？"],
+        })
+
+        assert "原始问题" in context_text
+        assert "你上一轮的问题1" in context_text
+        assert "最近对话摘录" in context_text
+        assert "当前尚未展开完的线索" in context_text
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])

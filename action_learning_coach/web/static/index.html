@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Action Learning AI Coach</title>
+  <style>
+    :root {
+      --bg: #f3efe4;
+      --panel: rgba(255, 252, 246, 0.88);
+      --panel-strong: #fffaf0;
+      --line: rgba(109, 78, 52, 0.18);
+      --text: #2f241a;
+      --muted: #6f5a46;
+      --accent: #c56a34;
+      --accent-deep: #8c3d1f;
+      --user: #f5dcc5;
+      --assistant: #fff7eb;
+      --error: #f9d5d1;
+      --shadow: 0 20px 60px rgba(94, 64, 38, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Avenir Next", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top right, rgba(197, 106, 52, 0.18), transparent 34%),
+        radial-gradient(circle at bottom left, rgba(140, 61, 31, 0.12), transparent 30%),
+        linear-gradient(135deg, #f8f1e6 0%, #efe7d8 45%, #f4ecdf 100%);
+    }
+
+    .shell {
+      width: min(1100px, calc(100vw - 32px));
+      margin: 24px auto;
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr);
+      gap: 20px;
+      align-items: stretch;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+    }
+
+    .sidebar {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .eyebrow {
+      font-size: 12px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--accent-deep);
+      font-weight: 700;
+    }
+
+    .headline {
+      margin: 0;
+      font-size: clamp(28px, 4vw, 42px);
+      line-height: 1.02;
+      letter-spacing: -0.03em;
+    }
+
+    .subtext,
+    .hint,
+    .meta-row {
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .rule-card {
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255, 247, 235, 0.8);
+    }
+
+    .rule-card strong {
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    .chat {
+      display: flex;
+      flex-direction: column;
+      min-height: calc(100vh - 48px);
+      overflow: hidden;
+    }
+
+    .chat-header {
+      padding: 20px 24px 14px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+    }
+
+    .chat-title {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      border: 0;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    .btn {
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      color: var(--text);
+      transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+    }
+
+    .btn:hover:not(:disabled) {
+      transform: translateY(-1px);
+      border-color: rgba(140, 61, 31, 0.35);
+    }
+
+    .btn:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+      color: #fff8f1;
+      border: none;
+    }
+
+    .status-bar {
+      padding: 0 24px 14px;
+      color: var(--muted);
+      font-size: 13px;
+      min-height: 20px;
+    }
+
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 24px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .bubble {
+      max-width: min(760px, 100%);
+      padding: 16px 18px;
+      border-radius: 20px;
+      border: 1px solid var(--line);
+      background: var(--assistant);
+      align-self: flex-start;
+      animation: rise 0.24s ease;
+    }
+
+    .bubble.user {
+      background: var(--user);
+      align-self: flex-end;
+      border-top-right-radius: 8px;
+    }
+
+    .bubble.assistant {
+      border-top-left-radius: 8px;
+    }
+
+    .bubble.system {
+      align-self: center;
+      background: rgba(255, 250, 240, 0.66);
+      text-align: center;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .bubble.error {
+      background: var(--error);
+      border-color: rgba(156, 53, 45, 0.25);
+    }
+
+    .label {
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-weight: 700;
+      color: var(--accent-deep);
+      margin-bottom: 8px;
+    }
+
+    .reply-ack {
+      margin-bottom: 12px;
+      line-height: 1.7;
+    }
+
+    .questions {
+      display: grid;
+      gap: 10px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .question-chip {
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.65);
+      border: 1px solid rgba(109, 78, 52, 0.14);
+      line-height: 1.6;
+    }
+
+    .message-text {
+      white-space: pre-wrap;
+      line-height: 1.7;
+      word-break: break-word;
+    }
+
+    .meta-row {
+      margin-top: 12px;
+      font-size: 12px;
+    }
+
+    .thinking-row {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+    }
+
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 2px solid rgba(197, 106, 52, 0.25);
+      border-top-color: var(--accent);
+      animation: spin 0.8s linear infinite;
+      flex: 0 0 auto;
+    }
+
+    .composer {
+      padding: 18px 24px 24px;
+      border-top: 1px solid var(--line);
+      background: rgba(255, 252, 246, 0.72);
+    }
+
+    .composer form {
+      display: grid;
+      gap: 12px;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 108px;
+      resize: vertical;
+      padding: 16px 18px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: #fffdf8;
+      color: var(--text);
+      font: inherit;
+      line-height: 1.6;
+      outline: none;
+    }
+
+    textarea:focus {
+      border-color: rgba(197, 106, 52, 0.42);
+      box-shadow: 0 0 0 3px rgba(197, 106, 52, 0.08);
+    }
+
+    .composer-actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .hint {
+      font-size: 12px;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    @keyframes rise {
+      from {
+        opacity: 0;
+        transform: translateY(8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @media (max-width: 920px) {
+      .shell {
+        grid-template-columns: 1fr;
+      }
+
+      .chat {
+        min-height: auto;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .shell {
+        width: calc(100vw - 18px);
+        margin: 9px auto;
+      }
+
+      .sidebar,
+      .chat-header,
+      .status-bar,
+      .messages,
+      .composer {
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+
+      .composer-actions {
+        align-items: stretch;
+      }
+
+      .toolbar {
+        width: 100%;
+      }
+
+      .toolbar .btn,
+      .toolbar .btn-primary {
+        flex: 1 1 auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="panel sidebar">
+      <div class="eyebrow">Action Learning</div>
+      <h1 class="headline">AI Catalyst</h1>
+      <div class="subtext">
+        这是当前后端的 Web 聊天封装。你输入业务情境后，系统会先在内部完成
+        “生成 → 评审 → 重写”的闭环，再返回最终催化师回复。
+      </div>
+      <div class="rule-card">
+        <strong>当前版本行为</strong>
+        <div class="meta-row">1. 一句简短共情</div>
+        <div class="meta-row">2. 两个不同维度的开放式问题</div>
+        <div class="meta-row">3. 内部最多 5 轮质量审查</div>
+      </div>
+      <div class="hint">
+        第一版先使用非流式返回。等待期间会显示转动的小圈，避免用户误以为系统卡住。
+      </div>
+    </aside>
+
+    <main class="panel chat">
+      <header class="chat-header">
+        <div>
+          <h2 class="chat-title">Conversation Workspace</h2>
+          <div class="meta-row">连续追问默认承接当前线程，除非你主动开启新话题。</div>
+        </div>
+        <div class="toolbar">
+          <button class="btn" id="resetButton" type="button">New Thread</button>
+        </div>
+      </header>
+
+      <div class="status-bar" id="statusBar">Ready.</div>
+      <section class="messages" id="messages"></section>
+
+      <section class="composer">
+        <form id="chatForm">
+          <textarea
+            id="messageInput"
+            placeholder="输入你的业务问题，或继续回答上一轮的追问。按 Enter 发送，Shift + Enter 换行。"
+          ></textarea>
+          <div class="composer-actions">
+            <div class="hint">当前为非流式模式，后端完成整轮审查后一次性返回结果。</div>
+            <button class="btn btn-primary" id="sendButton" type="submit">Send</button>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const state = {
+      conversationId: null,
+      sending: false,
+    };
+
+    const messagesEl = document.getElementById("messages");
+    const formEl = document.getElementById("chatForm");
+    const inputEl = document.getElementById("messageInput");
+    const sendButtonEl = document.getElementById("sendButton");
+    const resetButtonEl = document.getElementById("resetButton");
+    const statusBarEl = document.getElementById("statusBar");
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function scrollToBottom() {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function setSendingState(sending) {
+      state.sending = sending;
+      inputEl.disabled = sending;
+      sendButtonEl.disabled = sending;
+      resetButtonEl.disabled = sending;
+    }
+
+    function appendBubble({ role, html, className = "" }) {
+      const bubble = document.createElement("article");
+      bubble.className = `bubble ${role} ${className}`.trim();
+      bubble.innerHTML = html;
+      messagesEl.appendChild(bubble);
+      scrollToBottom();
+      return bubble;
+    }
+
+    function appendSystemMessage(text) {
+      appendBubble({
+        role: "system",
+        html: `<div class="message-text">${escapeHtml(text)}</div>`,
+      });
+    }
+
+    function appendUserMessage(text) {
+      appendBubble({
+        role: "user",
+        html: `
+          <div class="label">You</div>
+          <div class="message-text">${escapeHtml(text)}</div>
+        `,
+      });
+    }
+
+    function appendThinkingMessage() {
+      return appendBubble({
+        role: "assistant",
+        className: "thinking",
+        html: `
+          <div class="label">AI Catalyst</div>
+          <div class="thinking-row">
+            <span class="spinner" aria-hidden="true"></span>
+            <span>Thinking through the coaching loop...</span>
+          </div>
+        `,
+      });
+    }
+
+    function buildAssistantReplyHtml(payload) {
+      const coachReply = payload.coach_reply || {};
+      const acknowledgment = coachReply.acknowledgment || "";
+      const questions = Array.isArray(coachReply.questions) ? coachReply.questions.slice(0, 2) : [];
+
+      const questionItems = questions.map((question, index) => `
+        <li class="question-chip"><strong>Q${index + 1}.</strong> ${escapeHtml(question)}</li>
+      `).join("");
+
+      const fallback = !questionItems && payload.primary_question
+        ? `<li class="question-chip"><strong>Q1.</strong> ${escapeHtml(payload.primary_question)}</li>`
+        : questionItems;
+
+      const roundText = payload.review_rounds > 0 ? `${payload.review_rounds} round${payload.review_rounds > 1 ? "s" : ""}` : "0 rounds";
+      const bestTag = payload.returned_best_version ? " | returned best-scoring version" : "";
+
+      return `
+        <div class="label">AI Catalyst</div>
+        ${acknowledgment ? `<div class="reply-ack">${escapeHtml(acknowledgment)}</div>` : ""}
+        <ul class="questions">${fallback}</ul>
+        <div class="meta-row">Review: ${roundText} | Score: ${payload.final_score}/100 | ${payload.review_passed ? "PASS" : "NOT YET PASS"}${bestTag}</div>
+      `;
+    }
+
+    function replaceBubbleWithReply(bubble, payload) {
+      bubble.className = "bubble assistant";
+      bubble.innerHTML = buildAssistantReplyHtml(payload);
+      scrollToBottom();
+    }
+
+    function replaceBubbleWithError(bubble, message) {
+      bubble.className = "bubble assistant error";
+      bubble.innerHTML = `
+        <div class="label">System</div>
+        <div class="message-text">${escapeHtml(message)}</div>
+      `;
+      scrollToBottom();
+    }
+
+    async function parseApiResponse(response) {
+      const rawText = await response.text();
+      const contentType = response.headers.get("content-type") || "";
+
+      if (contentType.includes("application/json")) {
+        try {
+          return {
+            payload: JSON.parse(rawText),
+            rawText,
+          };
+        } catch (_error) {
+          return {
+            payload: null,
+            rawText,
+          };
+        }
+      }
+
+      try {
+        return {
+          payload: JSON.parse(rawText),
+          rawText,
+        };
+      } catch (_error) {
+        return {
+          payload: null,
+          rawText,
+        };
+      }
+    }
+
+    async function sendMessage() {
+      if (state.sending) {
+        return;
+      }
+
+      const message = inputEl.value.trim();
+      if (!message) {
+        statusBarEl.textContent = "Message cannot be empty.";
+        return;
+      }
+
+      appendUserMessage(message);
+      inputEl.value = "";
+      statusBarEl.textContent = "Working...";
+      setSendingState(true);
+
+      const thinkingBubble = appendThinkingMessage();
+
+      try {
+        const response = await fetch("/api/chat", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            message,
+            conversation_id: state.conversationId,
+          }),
+        });
+
+        const { payload, rawText } = await parseApiResponse(response);
+        if (!response.ok) {
+          const detail = payload && typeof payload === "object" ? payload.detail : "";
+          throw new Error(detail || rawText || "The server rejected the request.");
+        }
+        if (!payload || typeof payload !== "object") {
+          throw new Error(rawText || "The server returned an invalid response.");
+        }
+
+        state.conversationId = payload.conversation_id;
+        replaceBubbleWithReply(thinkingBubble, payload);
+        statusBarEl.textContent = `Ready. Active thread: ${state.conversationId.slice(0, 8)}...`;
+      } catch (error) {
+        const messageText = error instanceof Error ? error.message : "Unexpected error.";
+        replaceBubbleWithError(thinkingBubble, messageText);
+        statusBarEl.textContent = "Request failed.";
+      } finally {
+        setSendingState(false);
+        inputEl.focus();
+      }
+    }
+
+    async function startNewThread() {
+      if (state.sending) {
+        return;
+      }
+
+      statusBarEl.textContent = "Starting a new thread...";
+
+      try {
+        if (state.conversationId) {
+          const response = await fetch("/api/reset", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              conversation_id: state.conversationId,
+            }),
+          });
+
+          const { payload, rawText } = await parseApiResponse(response);
+          if (!response.ok) {
+            const detail = payload && typeof payload === "object" ? payload.detail : "";
+            throw new Error(detail || rawText || "Unable to reset the conversation.");
+          }
+          if (!payload || typeof payload !== "object") {
+            throw new Error(rawText || "The server returned an invalid response.");
+          }
+          state.conversationId = payload.conversation_id;
+        } else {
+          state.conversationId = null;
+        }
+
+        messagesEl.innerHTML = "";
+        appendSystemMessage("New thread started. Describe a fresh business situation or continue in a new direction.");
+        statusBarEl.textContent = "Ready.";
+        inputEl.focus();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unable to reset the conversation.";
+        statusBarEl.textContent = message;
+      }
+    }
+
+    formEl.addEventListener("submit", (event) => {
+      event.preventDefault();
+      sendMessage();
+    });
+
+    inputEl.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        sendMessage();
+      }
+    });
+
+    resetButtonEl.addEventListener("click", startNewThread);
+
+    appendSystemMessage("Ready. Start with your business problem. The AI will respond with one brief acknowledgment and two follow-up questions.");
+    inputEl.focus();
+  </script>
+</body>
+</html>

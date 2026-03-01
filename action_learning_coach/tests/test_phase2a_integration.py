@@ -1169,5 +1169,65 @@ class TestReviewLoopScenarios:
             assert result.context["round"] == round_num
 
 
+class TestConversationThreadState:
+    """验证连续追问线程状态"""
+
+    @pytest.fixture
+    def orchestrator(self):
+        from core.orchestrator import Orchestrator
+
+        config = _fake_llm_config()
+        orch = Orchestrator(
+            coach_config=config,
+            evaluator_config=config,
+        )
+        orch.create_session()
+        return orch
+
+    def test_run_turn_updates_conversation_thread(self, orchestrator):
+        """run_turn 完成后应记录线程上下文和结构化回复"""
+        from core.orchestrator import ReviewLoopResult
+
+        coach_reply = {
+            "acknowledgment": "我听到这件事正在消耗团队。",
+            "questions": [
+                "你现在最先注意到的变化是什么？",
+                "这些变化背后，你最在意的是什么？",
+            ],
+            "question": "你现在最先注意到的变化是什么？",
+        }
+
+        ret = ReviewLoopResult(
+            question=coach_reply["question"],
+            coach_reply=coach_reply,
+            review_result={"score": 96, "pass": True},
+            last_review_result={"score": 96, "pass": True},
+            messages=[{"role": "user", "content": "销售压力很大"}],
+            review_rounds=1,
+            passed=True,
+            best_score=96,
+        )
+
+        with patch.object(orchestrator, "_run_review_loop", return_value=ret):
+            result = orchestrator.run_turn("销售压力很大")
+
+        thread = result.context["conversation_thread"]
+        assert thread["active"] is True
+        assert thread["original_problem"] == "销售压力很大"
+        assert thread["last_coach_reply"]["questions"][0] == coach_reply["questions"][0]
+        assert thread["open_threads"] == coach_reply["questions"]
+        assert result.coach_reply == coach_reply
+
+    def test_reset_thread_clears_active_state(self, orchestrator):
+        """reset_thread 应清空当前连续会话线程"""
+        orchestrator._thread_state["active"] = True
+        orchestrator._thread_state["original_problem"] = "旧问题"
+
+        orchestrator.reset_thread()
+
+        assert orchestrator.has_active_thread() is False
+        assert orchestrator._thread_state["original_problem"] == ""
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

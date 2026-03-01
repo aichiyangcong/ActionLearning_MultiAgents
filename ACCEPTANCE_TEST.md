@@ -869,57 +869,166 @@ grep -rl "PROTOCOL" --include="*.md" . | sort
 
 ---
 
-## 测试 12: 交互式端到端测试（需要 API）
+## 测试 12: 交互式端到端测试（Terminal，推荐先做）
 
 ### 目的
-验证完整的双轨系统在真实 LLM 下运行
+验证当前真实终端交互链路可运行，并确认“连续追问线程”与内部 5 轮审查闭环正常工作。
 
 ### 执行步骤
 
 ```bash
-cd /Users/zhaoziwei/Desktop/关系行动/action_learning_coach
-../.venv/bin/python -m main
+cd /Users/zhaoziwei/Desktop/CodexTest/ActionLearning_MultiAgents/action_learning_coach
+
+# 如果当前机器访问第三方 Anthropic 兼容网关需要代理，先设置
+export https_proxy=http://127.0.0.1:8118
+export http_proxy=http://127.0.0.1:8118
+
+../.venv/bin/python main.py
+```
+
+### 启动成功的预期输出
+
+```text
+======================================================================
+                  Action Learning AI Coach (Phase 2)
+======================================================================
+
+  Commands:
+  - 'quit' or 'exit' to leave
+  - 'history' to view conversation history
+  - 'new' or 'reset' to start a new conversation thread
+
+  Orchestrator mode enabled
+  Coach: ...
+  Evaluator: ...
 ```
 
 ### 测试场景
 
-#### 场景 1: Business Track 正常流程
-1. 输入: `我们团队最近在项目交付上总是延期，大家都很焦虑`
-2. 观察: Observer 提取认知状态 → Coach 生成问题 → Evaluator 审查
+#### 场景 1: 首轮问题输入
+1. 在 `Describe your business problem:` 提示后输入:
+   - `销售团队因为销量下滑士气大降，理财卖不出去，遭受拒绝比例很高，人员流动大增`
+2. 观察系统输出
 
 **预期行为**:
-- 日志中可见 Observer 调用
-- Coach 生成开放式问题
-- Evaluator 审查通过/打回机制正常
-- `data/sessions/` 中生成新的会话目录
+- 系统完成内部“Coach 生成 → Evaluator 审查 → 必要时重写”的闭环
+- 终端最终显示 `AI Catalyst Reply`
+- 回复内容包含:
+  - 一句简短共情
+  - `Q1`
+  - `Q2`
+- `data/sessions/` 下生成新的会话目录
 
-#### 场景 2: 触发 Reflection Track（多轮对话）
-1. 持续输入带有重复模式和情绪升级的回答（3-5 轮）
-2. 例如:
-   - `每次都是这样，说好的事情第二天就变了`
-   - `我觉得就是领导不重视，说什么都没用`
-   - `我已经说了很多次了，没人听，真的很无力`
-3. 观察: 当 `reflection_readiness >= 0.7` 时，系统应自动切换到 Reflection Track
+#### 场景 2: 连续追问线程
+1. 在 `Continue the conversation:` 提示后继续输入:
+   - `他们最明显的变化是开始回避客户，而且会在晨会里沉默。`
+2. 观察系统输出
 
 **预期行为**:
-- 系统从业务提问切换为元认知反思提问
-- 反思问题关注学员的思维模式、假设和盲点
-- 反思完成后自动切回 Business Track
+- 系统不应把这次输入当成全新开题
+- 新一轮回复应明显承接上一轮上下文继续深挖
+- 回复仍然保持:
+  - 一句简短共情
+  - 两个不同维度的问题
 
-#### 场景 3: 检查持久化数据
+#### 场景 3: 重置线程
+1. 输入: `new`
+2. 再输入一个全新业务问题
+
+**预期行为**:
+- 终端显示 `Started a new conversation thread.`
+- 下一次提问应从新线程开始，不再默认承接上一轮问题
+
+#### 场景 4: 查看持久化数据
 ```bash
-# 查看最新会话的认知状态
-ls -la data/sessions/ | tail -3
-# 选择最新的会话目录，查看其中的文件
-cat data/sessions/{最新目录}/cognitive_state.json | python3 -m json.tool
-cat data/sessions/{最新目录}/raw_dialogue.jsonl | head -5
+ls -la /Users/zhaoziwei/Desktop/CodexTest/ActionLearning_MultiAgents/data/sessions/ | tail -3
+```
+
+任选最新目录后，检查:
+
+```bash
+cat /Users/zhaoziwei/Desktop/CodexTest/ActionLearning_MultiAgents/data/sessions/{最新目录}/raw_dialogue.jsonl | head -5
 ```
 
 ### 验收标准
-- [ ] Business Track: Coach 提问 → Evaluator 审查 → 正常输出
-- [ ] Observer: 每轮更新 cognitive_state.json
-- [ ] Reflection Track: 在 readiness 达标时自动触发
-- [ ] 数据持久化: session 目录中包含 cognitive_state.json, summary_chain.json, raw_dialogue.jsonl
+- [ ] 终端可正常启动，不报初始化错误
+- [ ] 首轮输入后能返回完整 `AI Catalyst Reply`
+- [ ] 回复包含一句简短共情和两个问题
+- [ ] 第二轮输入可延续当前线程，而不是默认重新开题
+- [ ] `new` / `reset` 可成功开启新线程
+- [ ] `data/sessions/` 中出现新的会话目录和原始日志文件
+
+---
+
+## 测试 13: Web UI 端到端测试（推荐体验界面）
+
+### 目的
+验证 Web 聊天界面可以正常启动，用户可通过输入框进行提问，并在等待期间看到“思考中”的转动小圈。
+
+### 执行步骤
+
+在仓库根目录启动 Web 服务:
+
+```bash
+cd /Users/zhaoziwei/Desktop/CodexTest/ActionLearning_MultiAgents
+./.venv/bin/python -m uvicorn action_learning_coach.web_app:app --host 127.0.0.1 --port 8000 --reload
+```
+
+在浏览器打开:
+
+```text
+http://127.0.0.1:8000
+```
+
+### 页面加载成功的预期状态
+- 左侧显示 `AI Catalyst` 说明面板
+- 右侧显示聊天消息区
+- 底部有多行输入框
+- 顶部有 `New Thread`
+- 初始系统消息提示可以开始输入业务问题
+
+### 测试场景
+
+#### 场景 1: 首轮输入
+1. 在输入框中输入:
+   - `销售团队因为销量下滑士气大降，理财卖不出去，遭受拒绝比例很高，人员流动大增`
+2. 点击 `Send`
+
+**预期行为**:
+- 页面立刻新增一条用户消息
+- AI 侧立刻出现一个带转动小圈的占位消息
+- 若干秒后，占位消息被替换为正式回复
+- 正式回复包含:
+  - 一句简短共情
+  - `Q1`
+  - `Q2`
+  - 底部显示 `Review: X rounds | Score: Y/100`
+
+#### 场景 2: 连续对话
+1. 在同一页面继续输入:
+   - `他们最明显的变化是开始回避客户，而且会在晨会里沉默。`
+2. 点击 `Send`
+
+**预期行为**:
+- 页面再次显示转动小圈
+- 返回的新回复应承接上一轮上下文，而不是完全重置
+
+#### 场景 3: 新建线程
+1. 点击 `New Thread`
+2. 观察页面状态
+
+**预期行为**:
+- 旧消息区被清空
+- 页面插入一条新的系统提示消息
+- 之后输入的新问题不再承接上一轮上下文
+
+### 验收标准
+- [ ] `uvicorn` 可正常启动，无导入错误
+- [ ] 浏览器可打开 `http://127.0.0.1:8000`
+- [ ] 点击 `Send` 后，AI 侧会先显示转动小圈
+- [ ] 返回结果为完整的 AI 催化师回复，而不是空白
+- [ ] Web UI 支持连续对话
+- [ ] `New Thread` 可重置当前 Web 会话线程
 
 ---
 
@@ -928,10 +1037,10 @@ cat data/sessions/{最新目录}/raw_dialogue.jsonl | head -5
 ### Phase 2a: AG2 迁移
 - [ ] `autogen_adapter.py` 已删除
 - [ ] 所有 Agent import 改为真实 `autogen`
-- [ ] Orchestrator 使用 `DefaultPattern` + `initiate_group_chat`
-- [ ] NestedChat 使用真实 AG2 `NestedChatTarget`
-- [ ] main.py 使用 Orchestrator 替代手写 for 循环
-- [ ] 42 个集成测试全部通过
+- [ ] Orchestrator 当前主路径使用显式 `Coach -> Evaluator -> 重写` 最多 5 轮闭环
+- [ ] `NestedChat` 已降级为 legacy 兼容路径，不再承担主流程
+- [ ] Terminal 模式支持连续追问线程与 `new` / `reset`
+- [ ] 47 个 Phase 2a 集成测试全部通过
 
 ### Phase 2b: 三层记忆系统
 - [ ] L1 CognitiveState 覆写模式正确
@@ -946,7 +1055,7 @@ cat data/sessions/{最新目录}/raw_dialogue.jsonl | head -5
 - [ ] Observer Prompt 输出 < 400 tokens 结构化 JSON
 - [ ] Mock 模式可用（无 API 调用）
 - [ ] 模型配置支持 `claude-haiku-4-5`
-- [ ] 28 个 Observer 测试全部通过
+- [ ] 29 个 Observer 测试全部通过
 
 ### Phase 2d: 双轨 FSM
 - [ ] ReflectionFacilitator 使用 `UpdateSystemMessage`
@@ -966,6 +1075,8 @@ cat data/sessions/{最新目录}/raw_dialogue.jsonl | head -5
 
 ### 已知缺项
 - [ ] `tests/test_memory.py` 未创建（memory 模块独立单元测试缺失，但 memory 功能被 Observer 和 Orchestrator 测试间接覆盖）
+- [ ] SSE / 真正流式输出尚未实现（当前 Web UI 为非流式最终返回 + spinner）
+- [ ] 跨进程重启后的会话线程恢复尚未实现（当前连续追问仅保证单次运行进程内有效）
 
 ---
 
@@ -977,18 +1088,21 @@ cat data/sessions/{最新目录}/raw_dialogue.jsonl | head -5
 **AG2 版本**: _______________
 
 **自动化测试结果**:
-- Phase 2a 集成测试 (42): [ ] 通过 [ ] 失败
-- Phase 2c Observer 测试 (28): [ ] 通过 [ ] 失败
-- Phase 2d FSM 测试 (38): [ ] 通过 [ ] 失败
-- 合计 108 个测试: [ ] 全部通过 [ ] 部分失败
+- Phase 2a 集成测试 (47): [ ] 通过 [ ] 失败
+- Phase 2c Observer 测试 (29): [ ] 通过 [ ] 失败
+- Phase 2d FSM 测试: [ ] 通过 [ ] 失败
+- Web UI API 测试 (4): [ ] 通过 [ ] 失败
+- 合计核心测试: [ ] 全部通过 [ ] 部分失败
 
 **手动验证结果**:
 - AG2 迁移验证: [ ] 通过 [ ] 失败
 - 三层记忆验证: [ ] 通过 [ ] 失败
 - Observer 验证: [ ] 通过 [ ] 失败
 - 双轨 FSM 验证: [ ] 通过 [ ] 失败
+- Terminal 连续对话验证: [ ] 通过 [ ] 失败
 - 文档完整性: [ ] 通过 [ ] 失败
-- 交互式端到端（可选）: [ ] 通过 [ ] 失败 [ ] 未测试
+- 交互式端到端（Terminal）: [ ] 通过 [ ] 失败 [ ] 未测试
+- Web UI 端到端（可选）: [ ] 通过 [ ] 失败 [ ] 未测试
 
 **总体评价**: [ ] Phase 2 验收通过 [ ] 需要修复
 

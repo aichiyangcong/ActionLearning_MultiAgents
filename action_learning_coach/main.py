@@ -201,7 +201,8 @@ def print_header():
     print("=" * 70)
     print("\n  Commands:")
     print("  - 'quit' or 'exit' to leave")
-    print("  - 'history' to view conversation history\n")
+    print("  - 'history' to view conversation history")
+    print("  - 'new' or 'reset' to start a new conversation thread\n")
 
 
 def print_separator(char="-", length=70):
@@ -237,9 +238,39 @@ def print_final_question(question: str):
     print("=" * 70)
 
 
-def get_user_input() -> str:
+def print_final_coach_reply(coach_reply: Dict | None, fallback_question: str = ""):
+    """打印最终 AI 催化师回复。"""
+    print("\n" + "=" * 70)
+    print("  AI Catalyst Reply:")
+
+    if isinstance(coach_reply, dict):
+        acknowledgment = str(coach_reply.get("acknowledgment", "") or "").strip()
+        questions = coach_reply.get("questions", [])
+
+        if acknowledgment:
+            print(f"\n  {acknowledgment}")
+
+        if isinstance(questions, list):
+            for idx, question in enumerate(questions[:2], 1):
+                text = str(question or "").strip()
+                if text:
+                    print(f"  Q{idx}. {text}")
+        elif fallback_question:
+            print(f'\n  "{fallback_question}"')
+    elif fallback_question:
+        print(f'\n  "{fallback_question}"')
+    else:
+        print("\n  (No coach reply available)")
+
+    print("\n" + "=" * 70)
+
+
+def get_user_input(has_active_thread: bool = False) -> str:
     """获取用户输入"""
-    print("\nDescribe your business problem:")
+    if has_active_thread:
+        print("\nContinue the conversation:")
+    else:
+        print("\nDescribe your business problem:")
     user_input = input("> ").strip()
     return user_input
 
@@ -282,7 +313,7 @@ def orchestrator_review_loop(
         result = orchestrator.run_turn(user_input)
 
         question = result.question
-        messages = result.messages
+        coach_reply = result.coach_reply
         review_rounds = int(result.context.get("review_rounds", 0) or 0)
         review_result = result.context.get("review_result", {})
         final_score = 0
@@ -293,7 +324,7 @@ def orchestrator_review_loop(
                 final_score = 0
 
         if question:
-            print_final_question(question)
+            print_final_coach_reply(coach_reply, fallback_question=question)
         else:
             print("\n  Warning: No question generated.")
 
@@ -389,7 +420,8 @@ def main(use_real_agent: bool = None):
         print("  Mock mode enabled (simulated data)\n")
 
     while True:
-        user_input = get_user_input()
+        has_active_thread = bool(use_real_agent and orchestrator and orchestrator.has_active_thread())
+        user_input = get_user_input(has_active_thread=has_active_thread)
 
         if user_input.lower() in ["quit", "exit", "q"]:
             print("\n  Goodbye!\n")
@@ -397,6 +429,12 @@ def main(use_real_agent: bool = None):
 
         if user_input.lower() == "history":
             history.show()
+            continue
+
+        if user_input.lower() in ["new", "reset"]:
+            if use_real_agent and orchestrator:
+                orchestrator.reset_thread()
+            print("  Started a new conversation thread.")
             continue
 
         if not user_input:

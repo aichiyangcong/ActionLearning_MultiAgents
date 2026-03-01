@@ -31,7 +31,7 @@ class StrictEvaluator:
     Strict Evaluator Agent
 
     职责:
-    - 评估 Coach 生成的问题质量
+    - 评估 AI 催化师整条回复的质量
     - 三维评分: 开放性(40) + 无诱导性(40) + 反思深度(20)
     - 评分 ≥95 通过，<95 打回并给出修改建议
     """
@@ -52,53 +52,111 @@ class StrictEvaluator:
             human_input_mode="NEVER",
         )
 
-    def evaluate(self, question: str) -> Dict[str, Any]:
+    @staticmethod
+    def _empty_result(feedback: str) -> Dict[str, Any]:
+        """统一空结果结构。"""
+        return {
+            "score": 0,
+            "breakdown": {"openness": 0, "neutrality": 0, "depth": 0},
+            "pass": False,
+            "feedback": feedback,
+        }
+
+    @staticmethod
+    def _normalize_coach_reply(coach_reply: Dict[str, Any] | str) -> Dict[str, Any]:
+        """兼容旧 question 字段和新催化师回复结构。"""
+        if isinstance(coach_reply, dict):
+            acknowledgment = str(coach_reply.get("acknowledgment", "") or "").strip()
+            raw_questions = coach_reply.get("questions", [])
+            questions = []
+            if isinstance(raw_questions, list):
+                for item in raw_questions:
+                    text = str(item or "").strip()
+                    if text:
+                        questions.append(text)
+            if not questions:
+                legacy_question = str(coach_reply.get("question", "") or "").strip()
+                if legacy_question:
+                    questions.append(legacy_question)
+            return {
+                "acknowledgment": acknowledgment,
+                "questions": questions,
+            }
+
+        question = str(coach_reply or "").strip()
+        return {
+            "acknowledgment": "",
+            "questions": [question] if question else [],
+        }
+
+    @staticmethod
+    def _format_review_input(coach_reply: Dict[str, Any] | str) -> str:
+        """把 Coach 回复转换成明确的评审输入。"""
+        payload = StrictEvaluator._normalize_coach_reply(coach_reply)
+        acknowledgment = payload["acknowledgment"]
+        questions = payload["questions"]
+
+        lines = ["请评估以下 AI 催化师回复:"]
+        lines.append("")
+        lines.append(f"简短共情: {acknowledgment or '（缺失）'}")
+
+        if questions:
+            for idx, question in enumerate(questions, 1):
+                lines.append(f"问题{idx}: {question}")
+        else:
+            lines.append("问题: （缺失）")
+
+        return "\n".join(lines)
+
+    def _parse_result(self, raw: Any) -> Dict[str, Any]:
+        """统一解析 Evaluator 的 LLM 输出。"""
+        if raw is None:
+            return self._empty_result("LLM 未返回响应")
+        if isinstance(raw, dict):
+            raw["pass"] = raw.get("score", 0) >= self.pass_threshold
+            return raw
+
+        response = str(raw)
+
+        try:
+            result = json.loads(response)
+            if isinstance(result, dict):
+                result["pass"] = result.get("score", 0) >= self.pass_threshold
+                return result
+        except json.JSONDecodeError:
+            pass
+
+        import re
+
+        json_match = re.search(r'```(?:json)?\s*\n(.*?)\n```', response, re.DOTALL)
+        if json_match:
+            try:
+                result = json.loads(json_match.group(1))
+                if isinstance(result, dict):
+                    result["pass"] = result.get("score", 0) >= self.pass_threshold
+                    return result
+            except json.JSONDecodeError:
+                pass
+
+        return self._empty_result(
+            f"评估失败: LLM 未返回标准 JSON 格式。原始响应: {response[:200]}..."
+        )
+
+    def evaluate(self, coach_reply: Dict[str, Any] | str) -> Dict[str, Any]:
         """
-        评估问题质量
+        评估 AI 催化师回复质量
 
         Args:
-            question: 待评估的问题
+            coach_reply: 待评估的催化师回复
 
         Returns:
             评估结果字典: {score, breakdown, pass, feedback}
         """
         # 调用 LLM 进行评估
         raw = self._agent.generate_reply(
-            messages=[{"role": "user", "content": f"请评估以下问题:\n\n{question}"}]
+            messages=[{"role": "user", "content": self._format_review_input(coach_reply)}]
         )
-
-        # 统一为字符串 (AG2 可能返回 str / dict / None)
-        if raw is None:
-            return {
-                "score": 0, "breakdown": {"openness": 0, "neutrality": 0, "depth": 0},
-                "pass": False, "feedback": "LLM 未返回响应",
-            }
-        if isinstance(raw, dict):
-            raw["pass"] = raw.get("score", 0) >= self.pass_threshold
-            return raw
-        response = str(raw)
-
-        # 解析 JSON 响应 - 处理 markdown 代码块包裹的情况
-        try:
-            result = json.loads(response)
-            result["pass"] = result.get("score", 0) >= self.pass_threshold
-            return result
-        except json.JSONDecodeError:
-            import re
-            json_match = re.search(r'```(?:json)?\s*\n(.*?)\n```', response, re.DOTALL)
-            if json_match:
-                try:
-                    result = json.loads(json_match.group(1))
-                    result["pass"] = result.get("score", 0) >= self.pass_threshold
-                    return result
-                except json.JSONDecodeError:
-                    pass
-            return {
-                "score": 0,
-                "breakdown": {"openness": 0, "neutrality": 0, "depth": 0},
-                "pass": False,
-                "feedback": f"评估失败: LLM 未返回标准 JSON 格式。原始响应: {response[:200]}...",
-            }
+        return self._parse_result(raw)
 
     def get_agent(self) -> ConversableAgent:
         """

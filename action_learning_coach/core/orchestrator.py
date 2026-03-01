@@ -46,6 +46,7 @@ logger = get_logger(__name__)
 class TurnResult:
     """单轮对话结果"""
     question: str
+    coach_reply: dict[str, Any] | None = None
     messages: list[dict[str, Any]] = field(default_factory=list)
     summary: str = ""
     context: dict[str, Any] = field(default_factory=dict)
@@ -55,6 +56,7 @@ class TurnResult:
 class ReviewLoopResult:
     """显式审查闭环结果。"""
     question: str
+    coach_reply: dict[str, Any] | None = None
     review_result: dict[str, Any] | None = None
     last_review_result: dict[str, Any] | None = None
     messages: list[dict[str, Any]] = field(default_factory=list)
@@ -129,6 +131,7 @@ class Orchestrator:
         self._cognitive_state = CognitiveState()
         self._summary_chain = SummaryChain()
         self._learner_profile = LearnerProfile()
+        self._thread_state = self._make_empty_thread_state()
 
         self._ctx = ContextVariables()
         self._session_ready = False
@@ -179,6 +182,7 @@ class Orchestrator:
         self._learner_profile.learner_id = self._learner_id
         self._cognitive_state = CognitiveState()
         self._summary_chain = SummaryChain()
+        self._thread_state = self._make_empty_thread_state()
 
         # 注入 ContextVariables (含 FSM 状态)
         self._ctx = ContextVariables(data={
@@ -188,6 +192,7 @@ class Orchestrator:
             "cognitive_state": self._cognitive_state.to_dict(),
             "summary_chain": self._summary_chain.to_dict(),
             "learner_profile": self._learner_profile.to_dict(),
+            "conversation_thread": dict(self._thread_state),
         })
         self._session_ready = True
 
@@ -199,6 +204,92 @@ class Orchestrator:
         )
 
     @staticmethod
+    def _make_empty_thread_state() -> dict[str, Any]:
+        """创建空的连续对话线程状态。"""
+        return {
+            "active": False,
+            "original_problem": "",
+            "recent_turns": [],
+            "last_coach_reply": None,
+            "open_threads": [],
+        }
+
+    def has_active_thread(self) -> bool:
+        """当前是否处于连续追问线程中。"""
+        return bool(self._thread_state.get("active"))
+
+    def reset_thread(self) -> None:
+        """显式重置当前连续对话线程。"""
+        self._thread_state = self._make_empty_thread_state()
+        self._ctx.set("conversation_thread", dict(self._thread_state))
+
+    def _build_thread_context(self, user_input: str) -> dict[str, Any]:
+        """构建本轮 Coach 可用的线程上下文。"""
+        if not self.has_active_thread():
+            return {"original_problem": str(user_input or "").strip()}
+
+        return {
+            "original_problem": self._thread_state.get("original_problem", ""),
+            "recent_turns": list(self._thread_state.get("recent_turns", [])),
+            "last_coach_reply": self._thread_state.get("last_coach_reply"),
+            "open_threads": list(self._thread_state.get("open_threads", [])),
+        }
+
+    def _update_thread_state(
+        self,
+        user_input: str,
+        coach_reply: dict[str, Any] | None,
+        review_result: dict[str, Any] | None,
+    ) -> None:
+        """在每轮结束后推进连续对话线程状态。"""
+        if not self.has_active_thread():
+            self._thread_state["active"] = True
+            self._thread_state["original_problem"] = str(user_input or "").strip()
+
+        sanitized_reply = coach_reply if isinstance(coach_reply, dict) else None
+        turn_record = {
+            "user_input": str(user_input or "").strip(),
+            "coach_reply": sanitized_reply,
+            "review_result": review_result if isinstance(review_result, dict) else None,
+        }
+
+        recent_turns = list(self._thread_state.get("recent_turns", []))
+        recent_turns.append(turn_record)
+        self._thread_state["recent_turns"] = recent_turns[-3:]
+        self._thread_state["last_coach_reply"] = sanitized_reply
+
+        if sanitized_reply is not None:
+            questions = sanitized_reply.get("questions", [])
+            if isinstance(questions, list):
+                self._thread_state["open_threads"] = [
+                    str(item or "").strip()
+                    for item in questions[:2]
+                    if str(item or "").strip()
+                ]
+
+        self._ctx.set("conversation_thread", dict(self._thread_state))
+
+    @staticmethod
+    def _render_coach_reply(coach_reply: dict[str, Any] | None) -> str:
+        """把结构化催化师回复渲染为可展示文本。"""
+        if not isinstance(coach_reply, dict):
+            return ""
+
+        lines = []
+        acknowledgment = str(coach_reply.get("acknowledgment", "") or "").strip()
+        if acknowledgment:
+            lines.append(acknowledgment)
+
+        questions = coach_reply.get("questions", [])
+        if isinstance(questions, list):
+            for idx, question in enumerate(questions[:2], 1):
+                text = str(question or "").strip()
+                if text:
+                    lines.append(f"Q{idx}. {text}")
+
+        return "\n".join(lines).strip()
+
+    @staticmethod
     def _serialize_message(payload: dict[str, Any]) -> str:
         """统一消息序列化，便于测试和日志稳定。"""
         return json.dumps(payload, ensure_ascii=False)
@@ -208,10 +299,36 @@ class Orchestrator:
         if isinstance(raw, dict):
             payload = dict(raw)
         else:
-            payload = {"question": str(raw or ""), "reasoning": "Coach 返回了非结构化结果"}
+            payload = {
+                "question": str(raw or ""),
+                "reasoning": "Coach 返回了非结构化结果",
+            }
 
-        question = str(payload.get("question", "") or "").strip()
-        payload["question"] = question
+        questions = payload.get("questions")
+        normalized_questions: list[str] = []
+        if isinstance(questions, list):
+            for item in questions:
+                text = str(item or "").strip()
+                if text:
+                    normalized_questions.append(text)
+
+        if not normalized_questions:
+            primary_question = str(payload.get("question", "") or "").strip()
+            if primary_question:
+                normalized_questions.append(primary_question)
+
+        if not normalized_questions:
+            normalized_questions.append("在你看来，这件事里最值得先看清的是什么？")
+        if len(normalized_questions) == 1:
+            normalized_questions.append("如果从另一个角度看，这件事还可能意味着什么？")
+
+        acknowledgment = str(payload.get("acknowledgment", "") or "").strip()
+        if not acknowledgment:
+            acknowledgment = "我听到这件事对你来说并不轻松。"
+
+        payload["acknowledgment"] = acknowledgment
+        payload["questions"] = normalized_questions[:2]
+        payload["question"] = normalized_questions[0]
         payload.setdefault("reasoning", "")
         return payload
 
@@ -242,7 +359,12 @@ class Orchestrator:
         payload.setdefault("feedback", "")
         return payload
 
-    def _run_review_loop(self, user_input: str, max_rounds: int | None = None) -> ReviewLoopResult:
+    def _run_review_loop(
+        self,
+        user_input: str,
+        max_rounds: int | None = None,
+        thread_context: dict[str, Any] | None = None,
+    ) -> ReviewLoopResult:
         """显式执行 Coach -> Evaluator -> Coach 的最多 5 轮闭环。"""
         if self._coach_wrapper is None or self._evaluator_wrapper is None:
             raise RuntimeError("Session not ready")
@@ -255,20 +377,27 @@ class Orchestrator:
         messages = [{"role": "user", "name": "User", "content": user_input}]
 
         best_question = ""
+        best_coach_reply: dict[str, Any] | None = None
         best_review_result: dict[str, Any] | None = None
         best_score = -1
         last_question = ""
+        last_coach_reply: dict[str, Any] | None = None
         last_review_result: dict[str, Any] | None = None
 
         for review_round in range(1, max_rounds + 1):
             if review_round == 1:
-                coach_raw = self._coach_wrapper.generate_question(user_input)
+                coach_raw = self._coach_wrapper.generate_question(
+                    user_input,
+                    thread_context=thread_context,
+                )
             else:
                 coach_raw = self._coach_wrapper.rewrite_question(
                     user_input=user_input,
                     previous_question=last_question,
                     review_feedback=last_review_result or {},
                     round_number=review_round,
+                    thread_context=thread_context,
+                    previous_reply=last_coach_reply,
                 )
 
             coach_payload = self._coerce_coach_payload(coach_raw)
@@ -276,10 +405,10 @@ class Orchestrator:
             messages.append({
                 "role": "assistant",
                 "name": self._coach.name if self._coach else "WIAL_Master_Coach",
-                "content": self._serialize_message(coach_payload),
-            })
+                    "content": self._serialize_message(coach_payload),
+                })
 
-            review_raw = self._evaluator_wrapper.evaluate(question)
+            review_raw = self._evaluator_wrapper.evaluate(coach_payload)
             review_payload = self._coerce_review_payload(review_raw)
             messages.append({
                 "role": "assistant",
@@ -291,14 +420,17 @@ class Orchestrator:
             if question and score >= best_score:
                 best_score = score
                 best_question = question
+                best_coach_reply = coach_payload
                 best_review_result = review_payload
 
             last_question = question or last_question
+            last_coach_reply = coach_payload
             last_review_result = review_payload
 
             if review_payload["pass"]:
                 return ReviewLoopResult(
                     question=question,
+                    coach_reply=coach_payload,
                     review_result=review_payload,
                     last_review_result=review_payload,
                     messages=messages,
@@ -307,7 +439,10 @@ class Orchestrator:
                     best_score=max(score, 0),
                 )
 
+        selected_coach_reply = best_coach_reply or last_coach_reply
         selected_question = best_question or last_question
+        if not selected_question and isinstance(selected_coach_reply, dict):
+            selected_question = str(selected_coach_reply.get("question", "") or "").strip()
         selected_review_result = best_review_result or last_review_result
         returned_best_version = (
             bool(selected_question)
@@ -317,6 +452,7 @@ class Orchestrator:
 
         return ReviewLoopResult(
             question=selected_question,
+            coach_reply=selected_coach_reply,
             review_result=selected_review_result,
             last_review_result=last_review_result,
             messages=messages,
@@ -353,9 +489,15 @@ class Orchestrator:
 
         self._ctx.set("round", self._ctx.get("round", 0) + 1)
 
-        review_loop = self._run_review_loop(user_input, max_rounds=max_rounds)
+        thread_context = self._build_thread_context(user_input)
+        review_loop = self._run_review_loop(
+            user_input,
+            max_rounds=max_rounds,
+            thread_context=thread_context,
+        )
         question = review_loop.question
         summary = question
+        coach_reply = review_loop.coach_reply
         messages = review_loop.messages
         ctx_dict = self._ctx.to_dict()
         ctx_dict["review_rounds"] = review_loop.review_rounds
@@ -367,6 +509,11 @@ class Orchestrator:
             ctx_dict["review_result"] = review_loop.review_result
         if review_loop.last_review_result is not None:
             ctx_dict["last_review_result"] = review_loop.last_review_result
+        if coach_reply is not None:
+            ctx_dict["coach_reply"] = coach_reply
+
+        self._update_thread_state(user_input, coach_reply, review_loop.review_result)
+        ctx_dict["conversation_thread"] = dict(self._thread_state)
 
         # ---- 同步 Observer 更新的认知状态 ----
         observer_state = ctx_dict.get("cognitive_state")
@@ -379,12 +526,13 @@ class Orchestrator:
         self._session_mgr.save_learner_profile(self._learner_profile)
 
         # Raw Log
-        agent_output = ""
-        for msg in reversed(messages):
-            content = msg.get("content", "")
-            if msg.get("role") == "assistant" and content:
-                agent_output = msg.get("content", "")
-                break
+        agent_output = self._render_coach_reply(coach_reply)
+        if not agent_output:
+            for msg in reversed(messages):
+                content = msg.get("content", "")
+                if msg.get("role") == "assistant" and content:
+                    agent_output = msg.get("content", "")
+                    break
         if not agent_output:
             agent_output = question or summary
         self._session_mgr.append_raw_log({
@@ -400,6 +548,7 @@ class Orchestrator:
         self._ctx.set("cognitive_state", self._cognitive_state.to_dict())
         self._ctx.set("summary_chain", self._summary_chain.to_dict())
         self._ctx.set("learner_profile", self._learner_profile.to_dict())
+        self._ctx.set("conversation_thread", dict(self._thread_state))
 
         logger.info(
             "Turn complete: round=%d, track=%s, messages=%d, last_speaker=%s",
@@ -411,6 +560,7 @@ class Orchestrator:
 
         return TurnResult(
             question=question or summary,
+            coach_reply=coach_reply,
             messages=messages,
             summary=summary,
             context=ctx_dict,
