@@ -19,33 +19,46 @@ logger = get_logger(__name__)
 
 
 # ============================================================
-# 消息提取
+# 消息提取 (从 GroupChat carryover 中提取)
 # ============================================================
-def _extract_question(
+def _extract_question_from_carryover(
     recipient: ConversableAgent,
     messages: list[dict[str, Any]],
-    sender: ConversableAgent,
-    config: Any,
+    summary_args: dict[str, Any],
 ) -> str:
-    """从 Coach 输出中提取问题供 Evaluator 评估
+    """从 carryover messages 中提取 Coach 的问题
 
-    AG2 nested chat 的 message callable 签名:
-        (recipient, messages, sender, config) -> str
+    carryover_config 的 summary_method Callable 签名:
+        (recipient, messages, summary_args) -> str
 
-    提取策略: 尝试 JSON 解析取 question 字段，回退到原始文本。
+    messages 是 GroupChat 的完整历史（已 trim 最后 2 条 transition 消息）
+    从后往前找 Coach 的最后一条消息，提取其中的 question 字段。
     """
     import json
 
+    logger.info(f"Carryover messages count: {len(messages)}")
+    for i, msg in enumerate(messages[-5:]):  # 只打印最后 5 条
+        logger.info(f"Message {i}: role={msg.get('role')}, name={msg.get('name')}, content={msg.get('content', '')[:100]}")
+
+    # 从后往前找 Coach 的最后一条消息
+    for msg in reversed(messages):
+        if msg.get("name") == "WIAL_Master_Coach" and msg.get("role") == "assistant":
+            content = msg.get("content", "")
+
+            # 尝试 JSON 解析
+            try:
+                data = json.loads(content)
+                question = data.get("question", content)
+            except (json.JSONDecodeError, TypeError):
+                question = content
+
+            logger.info(f"Extracted question: {question}")
+            return f"请评估以下问题:\n\n{question}"
+
+    # Fallback: 使用最后一条消息
     last_content = messages[-1].get("content", "") if messages else ""
-
-    # 尝试从 JSON 格式中提取 question
-    try:
-        data = json.loads(last_content)
-        question = data.get("question", last_content)
-    except (json.JSONDecodeError, TypeError):
-        question = last_content
-
-    return f"请评估以下问题:\n\n{question}"
+    logger.warning(f"No Coach message found, using last message: {last_content[:100]}")
+    return f"请评估以下问题:\n\n{last_content}"
 
 
 # ============================================================
@@ -57,6 +70,9 @@ def create_nested_chat_config(
 ) -> NestedChatTarget:
     """创建 NestedChatTarget 实例，配置 Coach-Evaluator 审查循环
 
+    使用 carryover_config 从 GroupChat 传递消息到 nested chat。
+    carryover 会接收 GroupChat 的完整历史（trim 最后 2 条 transition 消息）。
+
     Args:
         evaluator_agent: AG2 ConversableAgent 实例（Evaluator）
         max_rounds: 最大审查轮次，每轮 = Coach 提交 + Evaluator 回复
@@ -67,7 +83,11 @@ def create_nested_chat_config(
     chat_queue = [
         {
             "recipient": evaluator_agent,
-            "message": _extract_question,
+            "message": "开始评估",  # 初始消息
+            "carryover_config": {
+                "summary_method": _extract_question_from_carryover,
+                "summary_args": {},
+            },
             "summary_method": "last_msg",
             "max_turns": max_rounds * 2,
         }

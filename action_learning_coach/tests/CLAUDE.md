@@ -9,21 +9,26 @@
 - test_e2e.py: 端到端集成测试，Mock 模式完整流程，真实模式流程，验收标准检查，系统稳定性测试
 - test_phase2a_integration.py: Phase 2a 集成测试 (42 用例)，验证 AG2 编排骨架 + Coach-Evaluator 审查循环场景
 - test_phase2c_observer.py: Phase 2c Observer 测试 (28 用例)，验证 Observer config/prompt/FunctionTarget 签名/逻辑/Orchestrator 集成/认知状态同步
+- test_phase2d_fsm.py: Phase 2d 双轨 FSM 测试 (38 用例)，验证 Reflection config/prompt/Agent/双轨路由/关键词检测/Orchestrator 集成/边界值
 
 ## 测试统计
-- 总测试用例: 111
+- 总测试用例: 149
 - Phase 1 Mock 模式: 24 个（100% 通过）
 - Phase 1 真实模式: 17 个（需 API Key）
 - Phase 2a 集成测试: 42 个（100% 通过，无需 API Key）
 - Phase 2c Observer 测试: 28 个（100% 通过，无需 API Key）
+- Phase 2d 双轨 FSM 测试: 38 个（100% 通过，无需 API Key）
 
 ## 运行方式
 ```bash
 # 全部测试
 PYTHONPATH=action_learning_coach .venv/bin/python -m pytest action_learning_coach/tests/ -v
 
-# 仅 Phase 2c Observer 测试
-PYTHONPATH=action_learning_coach .venv/bin/python -m pytest action_learning_coach/tests/test_phase2c_observer.py -v
+# 仅 Phase 2d 双轨 FSM 测试
+PYTHONPATH=action_learning_coach .venv/bin/python -m pytest action_learning_coach/tests/test_phase2d_fsm.py -v
+
+# Phase 2 全部测试 (无回归验证)
+PYTHONPATH=action_learning_coach .venv/bin/python -m pytest action_learning_coach/tests/test_phase2a_integration.py action_learning_coach/tests/test_phase2c_observer.py action_learning_coach/tests/test_phase2d_fsm.py -v
 ```
 
 [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md

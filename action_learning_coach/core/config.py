@@ -17,6 +17,69 @@ load_dotenv()
 
 
 # ============================================================
+# Proxy-Compatible HTTP Client
+# ============================================================
+# Anthropic SDK 的 x-stainless-* headers 会被部分代理 Cloudflare 规则拦截
+# 用纯 httpx 替换 SDK 的 HTTP 层，只保留 Message 模型解析
+
+def _patch_anthropic_client():
+    """替换 AG2 AnthropicClient._client 为纯 httpx 实现"""
+    try:
+        import httpx
+        from anthropic.types import Message
+        from autogen.oai.anthropic import AnthropicClient
+
+        class _HttpxMessages:
+            """只实现 messages.create()，返回 Anthropic Message 对象"""
+
+            def __init__(self, api_key: str, base_url: str):
+                self._api_key = api_key
+                self._base_url = base_url.rstrip("/")
+                self._http = httpx.Client(timeout=120)
+
+            def create(self, **params):
+                resp = self._http.post(
+                    f"{self._base_url}/v1/messages",
+                    headers={
+                        "x-api-key": self._api_key,
+                        "anthropic-version": "2023-06-01",
+                        "Content-Type": "application/json",
+                    },
+                    json=params,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                # 修复代理 API 返回的空 stop_reason
+                if "stop_reason" in data and not data["stop_reason"]:
+                    data["stop_reason"] = "end_turn"
+
+                return Message.model_validate(data)
+
+        class _HttpxProxy:
+            """模拟 anthropic.Anthropic，只暴露 .messages 属性"""
+
+            def __init__(self, api_key: str, base_url: str):
+                self.messages = _HttpxMessages(api_key, base_url)
+
+        _orig_init = AnthropicClient.__init__
+
+        def _patched_init(self, *args, **kwargs):
+            _orig_init(self, *args, **kwargs)
+            if hasattr(self, "_client") and self._client is not None:
+                self._client = _HttpxProxy(
+                    api_key=self._api_key,
+                    base_url=self._base_url or "https://api.anthropic.com",
+                )
+
+        AnthropicClient.__init__ = _patched_init
+    except ImportError:
+        pass
+
+_patch_anthropic_client()
+
+
+# ============================================================
 # Configuration Data Class
 # ============================================================
 @dataclass
@@ -43,7 +106,6 @@ class LLMConfig:
             "temperature": self.temperature,
         }
 
-        # 如果有自定义 base_url，添加到配置中
         if self.base_url:
             config["config_list"][0]["base_url"] = self.base_url
 
@@ -57,23 +119,22 @@ def get_llm_config(agent_type: str = "default") -> LLMConfig:
     """从环境变量加载 LLM 配置，支持不同 Agent 使用不同模型
 
     Args:
-        agent_type: Agent 类型 ("coach", "evaluator", "default")
+        agent_type: Agent 类型 ("coach", "evaluator", "observer", "reflection", "default")
 
     Returns:
         LLMConfig 实例
     """
-    # 获取 API Key 和 Base URL
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY not found in environment variables")
 
     base_url = os.getenv("ANTHROPIC_BASE_URL", None)
 
-    # 根据 Agent 类型选择模型
     model_map = {
         "coach": os.getenv("COACH_MODEL", "claude-sonnet-4-6"),
         "evaluator": os.getenv("EVALUATOR_MODEL", "claude-opus-4-6"),
         "observer": os.getenv("OBSERVER_MODEL", "claude-haiku-4-5"),
+        "reflection": os.getenv("REFLECTION_MODEL", "claude-sonnet-4-6"),
         "default": os.getenv("COACH_MODEL", "claude-sonnet-4-6"),
     }
 

@@ -276,18 +276,7 @@ Keep the map aligned with the terrain, or the terrain will be lost.
 Python 3.10+ + AG2 (AutoGen) 0.2.3+ + Anthropic Claude API
 
 ## 项目状态
-
-**当前阶段**: Phase 2 准备启动
-**Phase 1 完成**: ✅ commit `c7cee5a` (2026-02-28)
 **详细进度**: 见 `doc/project_status.md`
-
-### Phase 1 技术债（Phase 2 需解决）
-
-1. **AutoGen 是假的** — `core/autogen_adapter.py` 用 httpx 绕过 AG2 框架
-2. **Nested Chat 是空架子** — `core/nested_chat.py` 从未被调用
-3. **无状态** — 跨轮记忆靠字符串拼接，无持久化
-
-详见 `doc/phase1_technical_debt.md`
 
 ### Phase 2 目标
 
@@ -345,6 +334,7 @@ requirements.txt - Python 依赖
 - `doc/technical_architecture_cto_perspective.md` — CTO 技术架构方案
 - `doc/记忆机制的参考.md` — ChatGPT + OpenClaw 记忆系统参考
 - `AGENTS.md` — 团队角色定义（Team Lead, Architect, Backend, Logic Engineer, Tester）
+- `doc/AI_ONBOARDING.md` — ⭐ 新 AI 接手项目的系统学习路径
 
 [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 

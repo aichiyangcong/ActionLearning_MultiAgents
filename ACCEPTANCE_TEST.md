@@ -361,6 +361,643 @@ _______________________________________________
 
 ---
 
+---
+
+# Phase 2 验收测试说明书
+
+> **版本**: v1.0
+> **日期**: 2026-03-01
+> **覆盖范围**: Phase 2a (AG2 迁移) + Phase 2b (三层记忆) + Phase 2c (Observer) + Phase 2d (双轨 FSM)
+
+---
+
+## Phase 2 测试环境准备
+
+> **注意**: 虚拟环境位于项目根目录 `/Users/zhaoziwei/Desktop/关系行动/.venv/`
+> 以下所有命令中 `PYTHON` 指 `/Users/zhaoziwei/Desktop/关系行动/.venv/bin/python`
+> 业务代码目录为 `action_learning_coach/`，需在该目录下运行 Agent 相关命令
+
+### 1. 检查 Python 环境与依赖
+
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动
+.venv/bin/python --version
+# 预期: Python 3.10+
+```
+
+### 2. 验证 AG2 框架可用
+
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动
+.venv/bin/python -c "
+from autogen import ConversableAgent, UserProxyAgent
+from autogen.agentchat import initiate_group_chat, ContextVariables
+from autogen.agentchat.group import OnCondition, RevertToUserTarget, FunctionTarget
+from autogen.agentchat.group.patterns.pattern import DefaultPattern
+print('AG2 框架导入成功')
+"
+# 预期: AG2 框架导入成功
+```
+
+### 3. 验证 Phase 2 新增环境变量
+
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动/action_learning_coach
+cat .env
+```
+
+**预期内容（Phase 2 新增项）**:
+```
+OBSERVER_MODEL=claude-haiku-4-5        # Observer 轻量模型（可选，默认 claude-haiku-4-5）
+REFLECTION_MODEL=claude-sonnet-4-5-20250929  # Reflection 模型（可选，默认同 Coach）
+```
+
+---
+
+## 测试 6: Phase 2 自动化测试套件（核心验证）
+
+### 目的
+一次性验证 Phase 2 全部 108 个测试用例
+
+### 执行步骤
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动
+.venv/bin/python -m pytest action_learning_coach/tests/test_phase2a_integration.py action_learning_coach/tests/test_phase2c_observer.py action_learning_coach/tests/test_phase2d_fsm.py -v
+```
+
+### 预期输出
+```
+test_phase2a_integration.py  — 42 passed
+test_phase2c_observer.py     — 28 passed
+test_phase2d_fsm.py          — 38 passed
+============================= 108 passed ==============================
+```
+
+### 验收标准
+- [ ] 108 个测试全部通过
+- [ ] 无 warning 或 error
+- [ ] 运行时间 < 5 秒（不调用真实 API）
+
+---
+
+## 测试 7: Phase 2a — AG2 真实迁移验证
+
+### 目的
+验证假适配器已删除，所有 Agent 使用真实 AG2 ConversableAgent
+
+### 7.1 假适配器已删除
+
+```bash
+ls /Users/zhaoziwei/Desktop/关系行动/action_learning_coach/core/autogen_adapter.py 2>&1
+# 预期: No such file or directory
+```
+
+### 7.2 Agent 导入验证
+
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动/action_learning_coach
+../.venv/bin/python -c "
+from agents import WIALMasterCoach, StrictEvaluator, UserProxy, observe_turn, ReflectionFacilitator
+print('5 个 Agent 导入成功')
+print(f'  WIALMasterCoach: {WIALMasterCoach}')
+print(f'  StrictEvaluator: {StrictEvaluator}')
+print(f'  UserProxy: {UserProxy}')
+print(f'  observe_turn: {observe_turn}')
+print(f'  ReflectionFacilitator: {ReflectionFacilitator}')
+"
+```
+
+### 7.3 Orchestrator 创建 Session
+
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动/action_learning_coach
+../.venv/bin/python -c "
+from core.orchestrator import Orchestrator, TurnResult
+orch = Orchestrator()
+orch.create_session()
+print(f'Coach: {orch.coach}')
+print(f'Evaluator: {orch.evaluator}')
+print(f'Reflection: {orch.reflection}')
+assert orch.coach is not None, 'Coach 未创建'
+assert orch.evaluator is not None, 'Evaluator 未创建'
+assert orch.reflection is not None, 'Reflection 未创建'
+print('Orchestrator 创建成功，所有 Agent 就绪')
+"
+```
+
+### 7.4 NestedChat 配置验证
+
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动/action_learning_coach
+../.venv/bin/python -c "
+from core.nested_chat import create_nested_chat_config
+from autogen import ConversableAgent
+from autogen.agentchat.group.targets.transition_target import NestedChatTarget
+
+# 创建临时 evaluator 以验证配置
+evaluator = ConversableAgent(name='test_eval', llm_config=False)
+target = create_nested_chat_config(evaluator, max_rounds=5)
+print(f'返回类型: {type(target).__name__}')
+assert isinstance(target, NestedChatTarget), 'NestedChatTarget 类型不匹配'
+print('NestedChatTarget 配置正确')
+"
+```
+
+### 验收标准
+- [ ] `autogen_adapter.py` 源文件已删除
+- [ ] 5 个 Agent（Coach, Evaluator, UserProxy, Observer, Reflection）导入成功
+- [ ] Orchestrator 可创建 Session，所有 Agent 初始化无报错
+- [ ] NestedChat 返回真实 AG2 `NestedChatTarget` 实例
+
+---
+
+## 测试 8: Phase 2b — 三层记忆系统验证
+
+### 目的
+验证 L1/L2/L3 数据结构、文件 I/O、ContextVariables 集成
+
+### 8.1 数据结构验证
+
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动/action_learning_coach
+../.venv/bin/python -c "
+from memory import CognitiveState, SummaryChain, SummaryEntry, LearnerProfile, SessionManager
+
+# L1 认知状态
+cs = CognitiveState(current_topic='测试问题', emotional_tone='neutral', turn_number=1)
+d = cs.to_dict()
+cs2 = CognitiveState.from_dict(d)
+assert cs2.current_topic == '测试问题'
+print(f'L1 CognitiveState: 序列化/反序列化 通过')
+
+# L2 摘要链
+sc = SummaryChain()
+sc.append(SummaryEntry(phase='test', turns='1-3', summary='测试摘要'))
+assert len(sc.entries) == 1
+print(f'L2 SummaryChain: 追加 通过')
+
+# L3 学习者画像
+lp = LearnerProfile(learner_id='test_user')
+d = lp.to_dict()
+lp2 = LearnerProfile.from_dict(d)
+assert lp2.learner_id == 'test_user'
+print(f'L3 LearnerProfile: 序列化/反序列化 通过')
+
+print('三层数据结构全部正常')
+"
+```
+
+### 8.2 文件 I/O 验证
+
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动/action_learning_coach
+../.venv/bin/python -c "
+import json, os, shutil
+from memory import CognitiveState, SummaryChain, SummaryEntry, LearnerProfile, SessionManager
+from memory.raw_log import append_raw_log
+
+# 创建临时会话
+sm = SessionManager('test_acceptance', 'test_learner')
+sm.init_session()
+
+# L1 覆写测试
+cs1 = CognitiveState(current_topic='第一轮', turn_number=1)
+sm.save_cognitive_state(cs1)
+cs2 = CognitiveState(current_topic='第二轮', turn_number=2)
+sm.save_cognitive_state(cs2)
+loaded = sm.load_cognitive_state()
+assert loaded.current_topic == '第二轮', 'L1 应为覆写而非累积'
+print('L1 覆写验证: 通过')
+
+# L2 追加测试
+sc = SummaryChain()
+sc.append(SummaryEntry(phase='p1', turns='1-3', summary='阶段1摘要'))
+sm.save_summary_chain(sc)
+sc.append(SummaryEntry(phase='p2', turns='4-6', summary='阶段2摘要'))
+sm.save_summary_chain(sc)
+loaded_sc = sm.load_summary_chain()
+assert len(loaded_sc.entries) == 2
+print('L2 追加验证: 通过')
+
+# Raw JSONL 测试
+session_dir = sm.session_dir
+append_raw_log(session_dir, {'role': 'user', 'content': '测试1', 'turn': 1})
+append_raw_log(session_dir, {'role': 'coach', 'content': '测试2', 'turn': 2})
+log_path = os.path.join(session_dir, 'raw_dialogue.jsonl')
+with open(log_path) as f:
+    lines = f.readlines()
+assert len(lines) == 2
+print('Raw JSONL 追加验证: 通过')
+
+# 清理
+shutil.rmtree(os.path.dirname(session_dir), ignore_errors=True)
+print('三层记忆文件 I/O 全部正常')
+"
+```
+
+### 8.3 数据持久化验证（检查已有会话数据）
+
+```bash
+ls /Users/zhaoziwei/Desktop/关系行动/action_learning_coach/data/sessions/ | head -5
+# 预期: 显示多个 session 目录（格式: YYYYMMDD_HHMMSS_xxxxxx）
+
+ls /Users/zhaoziwei/Desktop/关系行动/action_learning_coach/data/learners/
+# 预期: 显示 learner 目录（至少有 default/）
+```
+
+### 验收标准
+- [ ] L1 CognitiveState 序列化/反序列化正确
+- [ ] L2 SummaryChain 追加逻辑正确
+- [ ] L3 LearnerProfile 序列化/反序列化正确
+- [ ] L1 为覆写模式（后写覆盖先写）
+- [ ] Raw JSONL 逐行追加
+- [ ] `data/sessions/` 和 `data/learners/` 目录存在且有真实数据
+
+---
+
+## 测试 9: Phase 2c — Observer Agent 验证
+
+### 目的
+验证 Observer 作为 FunctionTarget 实现，可提取认知状态并路由
+
+### 9.1 Observer 函数签名验证
+
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动/action_learning_coach
+../.venv/bin/python -c "
+import inspect
+from agents.observer import observe_turn
+
+sig = inspect.signature(observe_turn)
+params = list(sig.parameters.keys())
+print(f'参数列表: {params}')
+
+# 验证 FunctionTarget 兼容签名
+assert params[0] == 'output', '第一参数必须是 output'
+assert params[1] == 'ctx', '第二参数必须是 ctx'
+assert 'observer_config' in params
+assert 'coach_agent' in params
+assert 'reflection_agent' in params
+print('Observer 函数签名符合 FunctionTarget 规范')
+"
+```
+
+### 9.2 Observer Mock 模式测试
+
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动/action_learning_coach
+../.venv/bin/python -c "
+from autogen.agentchat import ContextVariables
+from agents.observer import observe_turn
+
+# Mock 模式：不传 observer_config，不调用 LLM
+ctx = ContextVariables(data={'round': 1, 'summary_chain': {'entries': []}})
+result = observe_turn('用户说了一些话', ctx)
+
+print(f'返回类型: {type(result).__name__}')
+cognitive = result.context_variables.get('cognitive_state')
+print(f'认知状态: {cognitive}')
+print(f'目标 Agent: {result.target}')
+print('Observer Mock 模式正常工作')
+"
+```
+
+### 9.3 Observer Prompt 验证
+
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动/action_learning_coach
+../.venv/bin/python -c "
+from prompts.observer_prompt import OBSERVER_SYSTEM_MESSAGE
+
+# 验证关键字段
+assert 'current_topic' in OBSERVER_SYSTEM_MESSAGE
+assert 'reflection_readiness' in OBSERVER_SYSTEM_MESSAGE
+assert 'emotional_tone' in OBSERVER_SYSTEM_MESSAGE
+assert 'JSON' in OBSERVER_SYSTEM_MESSAGE
+
+# 验证 token 预算 (粗略估算: 1 token ~ 4 chars)
+token_estimate = len(OBSERVER_SYSTEM_MESSAGE) / 4
+print(f'Observer Prompt 预估 tokens: {token_estimate:.0f}')
+print('Observer Prompt 包含所有必要字段')
+"
+```
+
+### 9.4 Observer 模型配置验证
+
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动/action_learning_coach
+../.venv/bin/python -c "
+from core.config import get_llm_config
+
+config = get_llm_config('observer')
+print(f'Observer 模型: {config.model}')
+print(f'Observer 配置: {config}')
+print('Observer 模型配置正确')
+"
+```
+
+### 验收标准
+- [ ] `observe_turn` 函数签名符合 `FunctionTarget` 规范（output, ctx, **extra_args）
+- [ ] Mock 模式下不调用 LLM，返回默认 CognitiveState
+- [ ] 返回类型为 `FunctionTargetResult`
+- [ ] Observer Prompt 包含 `current_topic`, `reflection_readiness`, `emotional_tone` 等字段
+- [ ] `get_llm_config('observer')` 返回正确配置（默认 claude-haiku-4-5）
+
+---
+
+## 测试 10: Phase 2d — 双轨 FSM + Reflection Agent 验证
+
+### 目的
+验证双轨切换逻辑（Business ↔ Reflection）和 Reflection Agent
+
+### 10.1 Reflection Agent 创建
+
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动/action_learning_coach
+../.venv/bin/python -c "
+from agents.reflection_agent import ReflectionFacilitator
+from core.config import get_llm_config
+
+config = get_llm_config('reflection')
+rf = ReflectionFacilitator(config)
+agent = rf.get_agent()
+
+print(f'Agent 名称: {agent.name}')
+print(f'Agent 类型: {type(agent).__name__}')
+print('ReflectionFacilitator 创建成功')
+"
+```
+
+### 10.2 Reflection Prompt 模板验证
+
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动/action_learning_coach
+../.venv/bin/python -c "
+from prompts.reflection_prompt import REFLECTION_TEMPLATE
+
+# 验证 5 个占位符存在
+placeholders = ['current_topic', 'emotional_tone', 'blind_spots', 'key_assumptions', 'anchor_quotes']
+for p in placeholders:
+    assert '{' + p + '}' in REFLECTION_TEMPLATE, f'缺少占位符: {p}'
+    print(f'  占位符 {p}: 存在')
+
+# 验证三层反思结构
+assert '表层' in REFLECTION_TEMPLATE or 'surface' in REFLECTION_TEMPLATE.lower() or '第一层' in REFLECTION_TEMPLATE
+print('Reflection Prompt 模板验证通过')
+"
+```
+
+### 10.3 双轨路由逻辑验证
+
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动/action_learning_coach
+../.venv/bin/python -c "
+from agents.observer import _route
+from autogen import ConversableAgent
+from autogen.agentchat import ContextVariables
+
+# 创建 mock agents
+coach = ConversableAgent(name='Coach', llm_config=False)
+reflection = ConversableAgent(name='Reflection', llm_config=False)
+
+# _route 签名: (current_track, readiness, output, ctx, coach_agent, reflection_agent)
+# 返回: (target_agent, next_track, reflection_turn_count)
+
+# 场景 1: Business Track, 低 readiness → 留在 Business
+ctx = ContextVariables(data={'reflection_turn_count': 0})
+agent, track, _ = _route('business', 0.3, '正常讨论', ctx, coach, reflection)
+print(f'低 readiness (0.3): → {agent.name}, track={track}')
+assert agent.name == 'Coach'
+
+# 场景 2: Business Track, 高 readiness → 切到 Reflection
+agent, track, _ = _route('business', 0.8, '正常讨论', ctx, coach, reflection)
+print(f'高 readiness (0.8): → {agent.name}, track={track}')
+assert agent.name == 'Reflection'
+
+# 场景 3: Reflection Track, 低 readiness → 切回 Business
+ctx3 = ContextVariables(data={'reflection_turn_count': 1})
+agent, track, _ = _route('reflection', 0.3, '正常讨论', ctx3, coach, reflection)
+print(f'反思中低 readiness (0.3): → {agent.name}, track={track}')
+assert agent.name == 'Coach'
+
+# 场景 4: Reflection Track, 用户要求回到业务
+agent, track, _ = _route('reflection', 0.8, '继续讨论业务问题', ctx3, coach, reflection)
+print(f'用户请求回业务: → {agent.name}, track={track}')
+assert agent.name == 'Coach'
+
+# 场景 5: Reflection Track, 超过最大轮次
+ctx5 = ContextVariables(data={'reflection_turn_count': 3})
+agent, track, _ = _route('reflection', 0.8, '继续反思', ctx5, coach, reflection)
+print(f'超过最大轮次 (3): → {agent.name}, track={track}')
+assert agent.name == 'Coach'
+
+print('双轨路由全部 5 个场景验证通过')
+"
+```
+
+### 10.4 Orchestrator 完整 FSM 配置验证
+
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动/action_learning_coach
+../.venv/bin/python -c "
+from core.orchestrator import Orchestrator
+
+orch = Orchestrator()
+orch.create_session()
+
+# 验证 ContextVariables 包含轨道状态
+ctx = orch._ctx
+print(f'current_track: {ctx[\"current_track\"]}')
+print(f'reflection_turn_count: {ctx[\"reflection_turn_count\"]}')
+print(f'cognitive_state: {type(ctx[\"cognitive_state\"]).__name__}')
+print(f'summary_chain: {type(ctx[\"summary_chain\"]).__name__}')
+
+# 验证 Reflection Agent 存在
+assert orch.reflection is not None, 'Reflection Agent 未创建'
+print(f'Reflection: {orch.reflection}')
+print('Orchestrator FSM 配置完整')
+"
+```
+
+### 验收标准
+- [ ] ReflectionFacilitator 可创建，使用 UpdateSystemMessage 动态注入认知状态
+- [ ] Reflection Prompt 包含 5 个占位符（current_topic, emotional_tone, blind_spots, key_assumptions, anchor_quotes）
+- [ ] 双轨路由 5 个场景全部正确：
+  - 低 readiness → Business Track
+  - 高 readiness (>= 0.7) → Reflection Track
+  - Reflection 中低 readiness → 切回 Business
+  - 用户关键词请求 → 切回 Business
+  - 超过最大反思轮次 (3) → 切回 Business
+- [ ] Orchestrator ContextVariables 包含 `current_track`, `reflection_turn_count`
+- [ ] Reflection Agent 在 Orchestrator 中正确初始化
+
+---
+
+## 测试 11: 文档完整性验证（GEB 协议）
+
+### 目的
+验证所有 CLAUDE.md 已按 GEB 分形文档协议更新
+
+### 执行步骤
+
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动/action_learning_coach
+
+# 检查所有 CLAUDE.md 是否存在
+echo "=== L2 文档检查 ==="
+for dir in agents core memory prompts tests; do
+    if [ -f "$dir/CLAUDE.md" ]; then
+        echo "  $dir/CLAUDE.md: 存在"
+    else
+        echo "  $dir/CLAUDE.md: 缺失!"
+    fi
+done
+
+# 检查 PROTOCOL 标记
+echo ""
+echo "=== PROTOCOL 标记检查 ==="
+grep -rl "PROTOCOL" --include="*.md" . | sort
+```
+
+### 验收标准
+- [ ] `agents/CLAUDE.md` — 包含 observer.py 和 reflection_agent.py
+- [ ] `core/CLAUDE.md` — 包含 orchestrator.py，不含 autogen_adapter.py
+- [ ] `memory/CLAUDE.md` — 新建，描述三层记忆架构
+- [ ] `prompts/CLAUDE.md` — 包含 observer_prompt.py 和 reflection_prompt.py
+- [ ] `tests/CLAUDE.md` — 包含 Phase 2 测试文件
+- [ ] 所有 CLAUDE.md 包含 `[PROTOCOL]` 标记
+
+---
+
+## 测试 12: 交互式端到端测试（需要 API）
+
+### 目的
+验证完整的双轨系统在真实 LLM 下运行
+
+### 执行步骤
+
+```bash
+cd /Users/zhaoziwei/Desktop/关系行动/action_learning_coach
+../.venv/bin/python -m main
+```
+
+### 测试场景
+
+#### 场景 1: Business Track 正常流程
+1. 输入: `我们团队最近在项目交付上总是延期，大家都很焦虑`
+2. 观察: Observer 提取认知状态 → Coach 生成问题 → Evaluator 审查
+
+**预期行为**:
+- 日志中可见 Observer 调用
+- Coach 生成开放式问题
+- Evaluator 审查通过/打回机制正常
+- `data/sessions/` 中生成新的会话目录
+
+#### 场景 2: 触发 Reflection Track（多轮对话）
+1. 持续输入带有重复模式和情绪升级的回答（3-5 轮）
+2. 例如:
+   - `每次都是这样，说好的事情第二天就变了`
+   - `我觉得就是领导不重视，说什么都没用`
+   - `我已经说了很多次了，没人听，真的很无力`
+3. 观察: 当 `reflection_readiness >= 0.7` 时，系统应自动切换到 Reflection Track
+
+**预期行为**:
+- 系统从业务提问切换为元认知反思提问
+- 反思问题关注学员的思维模式、假设和盲点
+- 反思完成后自动切回 Business Track
+
+#### 场景 3: 检查持久化数据
+```bash
+# 查看最新会话的认知状态
+ls -la data/sessions/ | tail -3
+# 选择最新的会话目录，查看其中的文件
+cat data/sessions/{最新目录}/cognitive_state.json | python3 -m json.tool
+cat data/sessions/{最新目录}/raw_dialogue.jsonl | head -5
+```
+
+### 验收标准
+- [ ] Business Track: Coach 提问 → Evaluator 审查 → 正常输出
+- [ ] Observer: 每轮更新 cognitive_state.json
+- [ ] Reflection Track: 在 readiness 达标时自动触发
+- [ ] 数据持久化: session 目录中包含 cognitive_state.json, summary_chain.json, raw_dialogue.jsonl
+
+---
+
+## Phase 2 验收检查清单
+
+### Phase 2a: AG2 迁移
+- [ ] `autogen_adapter.py` 已删除
+- [ ] 所有 Agent import 改为真实 `autogen`
+- [ ] Orchestrator 使用 `DefaultPattern` + `initiate_group_chat`
+- [ ] NestedChat 使用真实 AG2 `NestedChatTarget`
+- [ ] main.py 使用 Orchestrator 替代手写 for 循环
+- [ ] 42 个集成测试全部通过
+
+### Phase 2b: 三层记忆系统
+- [ ] L1 CognitiveState 覆写模式正确
+- [ ] L2 SummaryChain 追加模式正确
+- [ ] L3 LearnerProfile 渐进更新正确
+- [ ] Raw JSONL 逐行追加
+- [ ] SessionManager 文件 I/O 正常
+- [ ] ContextVariables 携带 L1/L2/L3
+
+### Phase 2c: Observer Agent
+- [ ] Observer 实现为 `FunctionTarget`（非 ConversableAgent）
+- [ ] Observer Prompt 输出 < 400 tokens 结构化 JSON
+- [ ] Mock 模式可用（无 API 调用）
+- [ ] 模型配置支持 `claude-haiku-4-5`
+- [ ] 28 个 Observer 测试全部通过
+
+### Phase 2d: 双轨 FSM
+- [ ] ReflectionFacilitator 使用 `UpdateSystemMessage`
+- [ ] Reflection Prompt 包含 5 个动态占位符
+- [ ] 双轨路由 5 个场景全部正确
+- [ ] `after_work` 链路完整: UserProxy→Observer→Coach/Reflection
+- [ ] Reflection Agent 使用 `RevertToUserTarget`
+- [ ] 38 个 FSM 测试全部通过
+
+### 文档完整性
+- [ ] 根级 CLAUDE.md 已更新（Phase 2 状态）
+- [ ] agents/CLAUDE.md 包含 5 个文件
+- [ ] core/CLAUDE.md 包含 3 个文件（无 autogen_adapter）
+- [ ] memory/CLAUDE.md 新建完成
+- [ ] prompts/CLAUDE.md 包含 4 个文件
+- [ ] tests/CLAUDE.md 包含 7 个测试文件
+
+### 已知缺项
+- [ ] `tests/test_memory.py` 未创建（memory 模块独立单元测试缺失，但 memory 功能被 Observer 和 Orchestrator 测试间接覆盖）
+
+---
+
+## Phase 2 验收结论
+
+**测试日期**: _______________
+**测试人员**: _______________
+**Python 版本**: _______________
+**AG2 版本**: _______________
+
+**自动化测试结果**:
+- Phase 2a 集成测试 (42): [ ] 通过 [ ] 失败
+- Phase 2c Observer 测试 (28): [ ] 通过 [ ] 失败
+- Phase 2d FSM 测试 (38): [ ] 通过 [ ] 失败
+- 合计 108 个测试: [ ] 全部通过 [ ] 部分失败
+
+**手动验证结果**:
+- AG2 迁移验证: [ ] 通过 [ ] 失败
+- 三层记忆验证: [ ] 通过 [ ] 失败
+- Observer 验证: [ ] 通过 [ ] 失败
+- 双轨 FSM 验证: [ ] 通过 [ ] 失败
+- 文档完整性: [ ] 通过 [ ] 失败
+- 交互式端到端（可选）: [ ] 通过 [ ] 失败 [ ] 未测试
+
+**总体评价**: [ ] Phase 2 验收通过 [ ] 需要修复
+
+**备注**:
+_______________________________________________
+_______________________________________________
+
+---
+
 ## 联系支持
 
 如遇到问题，请提供以下信息：

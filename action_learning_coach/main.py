@@ -308,11 +308,13 @@ def main(use_real_agent: bool = None):
 
             coach_model = orchestrator._coach_config.model
             evaluator_model = orchestrator._evaluator_config.model
-            observer_model = orchestrator._observer_config.model if orchestrator._observer_config else "mock"
+            observer_model = orchestrator._observer_config.model
+            reflection_model = orchestrator._reflection_config.model
             print(f"  AG2 Orchestrator mode enabled")
             print(f"  Coach: {coach_model}")
             print(f"  Evaluator: {evaluator_model}")
-            print(f"  Observer: {observer_model}\n")
+            print(f"  Observer: {observer_model}")
+            print(f"  Reflection: {reflection_model}\n")
             if logger:
                 logger.info("AG2 Orchestrator: coach=%s, evaluator=%s", coach_model, evaluator_model)
         except Exception as e:
