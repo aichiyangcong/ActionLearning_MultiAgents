@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from action_learning_coach.main import (
     ConversationHistory,
     mock_review_loop,
+    orchestrator_review_loop,
 )
 from action_learning_coach.core import get_llm_config
 from action_learning_coach.agents import WIALMasterCoach, StrictEvaluator
@@ -105,10 +106,10 @@ class TestRealModeE2E:
             evaluator = StrictEvaluator(llm_config)
             return coach, evaluator
         except ValueError:
-            pytest.skip("OPENAI_API_KEY not found")
+            pytest.skip("ANTHROPIC_API_KEY not found")
 
     @pytest.mark.skipif(
-        os.getenv("OPENAI_API_KEY", "").startswith("sk-test"),
+        not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "").startswith("sk-test"),
         reason="需要真实 API Key"
     )
     def test_real_mode_basic_flow(self, real_agents):
@@ -151,7 +152,7 @@ class TestRealModeE2E:
         assert review_rounds <= max_rounds, "审查轮次不应超过最大值"
 
     @pytest.mark.skipif(
-        os.getenv("OPENAI_API_KEY", "").startswith("sk-test"),
+        not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "").startswith("sk-test"),
         reason="需要真实 API Key"
     )
     def test_real_mode_quality_threshold(self, real_agents):
@@ -325,6 +326,29 @@ class TestSystemStability:
             mock_review_loop(user_input, history, streaming=False)
 
         assert len(history.records) == len(special_inputs), "应该处理所有特殊字符输入"
+
+
+class TestCliErrorHandling:
+    """测试 CLI 的错误提示和历史记录行为"""
+
+    def test_orchestrator_rate_limit_error_not_saved_to_history(self, capsys):
+        """429 限流时不应写入空历史记录"""
+
+        class FailingOrchestrator:
+            def run_turn(self, user_input):
+                raise RuntimeError(
+                    "Anthropic-compatible gateway rate limited the request "
+                    "(429 Too Many Requests). Please wait a moment and retry."
+                )
+
+        history = ConversationHistory()
+
+        orchestrator_review_loop("团队士气低", history, FailingOrchestrator())
+
+        captured = capsys.readouterr()
+        assert len(history.records) == 0, "失败轮次不应写入历史"
+        assert "429 Too Many Requests" in captured.out, "应提示限流信息"
+        assert "not saved to history" in captured.out, "应告知未保存历史"
 
 
 if __name__ == "__main__":

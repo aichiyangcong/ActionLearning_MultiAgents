@@ -27,7 +27,7 @@ def evaluator():
         return StrictEvaluator(llm_config)
     except ValueError:
         # 如果没有 API Key，跳过真实测试
-        pytest.skip("OPENAI_API_KEY not found, skipping real LLM tests")
+        pytest.skip("ANTHROPIC_API_KEY not found, skipping real LLM tests")
 
 
 # ============================================================
@@ -73,7 +73,7 @@ class TestLeadingQuestionDetection:
             assert has_open, f"问题应包含开放式关键词: {question}"
 
     @pytest.mark.skipif(
-        os.getenv("OPENAI_API_KEY", "").startswith("sk-test"),
+        not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "").startswith("sk-test"),
         reason="需要真实 API Key"
     )
     def test_evaluator_detects_leading_questions(self, evaluator):
@@ -97,7 +97,7 @@ class TestLeadingQuestionDetection:
         assert accuracy > 0.85, f"诱导性检测准确率过低: {accuracy:.2%}"
 
     @pytest.mark.skipif(
-        os.getenv("OPENAI_API_KEY", "").startswith("sk-test"),
+        not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "").startswith("sk-test"),
         reason="需要真实 API Key"
     )
     def test_evaluator_accepts_open_questions(self, evaluator):
@@ -128,7 +128,7 @@ class TestScoringDimensions:
     """测试评分的三个维度"""
 
     @pytest.mark.skipif(
-        os.getenv("OPENAI_API_KEY", "").startswith("sk-test"),
+        not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "").startswith("sk-test"),
         reason="需要真实 API Key"
     )
     def test_scoring_breakdown(self, evaluator):
@@ -175,7 +175,7 @@ class TestEdgeCases:
         assert len(question) > 500, "超长问题应该被检测"
 
     @pytest.mark.skipif(
-        os.getenv("OPENAI_API_KEY", "").startswith("sk-test"),
+        not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "").startswith("sk-test"),
         reason="需要真实 API Key"
     )
     def test_empty_question_real(self, evaluator):

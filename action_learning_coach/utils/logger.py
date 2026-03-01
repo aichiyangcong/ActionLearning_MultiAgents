@@ -8,7 +8,11 @@
 import logging
 import os
 from typing import Optional
-import colorlog
+
+try:
+    import colorlog
+except ImportError:
+    colorlog = None
 
 
 # ============================================================
@@ -44,20 +48,26 @@ def get_logger(
     if logger.handlers:
         return logger
 
-    # Console Handler with Color
-    console_handler = colorlog.StreamHandler()
+    # Console Handler: use plain logging when colorlog is unavailable.
+    console_handler = logging.StreamHandler()
     console_handler.setLevel(getattr(logging, level.upper()))
-    console_formatter = colorlog.ColoredFormatter(
-        "%(log_color)s%(asctime)s [%(levelname)s] %(name)s:%(lineno)d - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        log_colors={
-            "DEBUG": "cyan",
-            "INFO": "green",
-            "WARNING": "yellow",
-            "ERROR": "red",
-            "CRITICAL": "bold_red",
-        },
-    )
+    if colorlog:
+        console_formatter = colorlog.ColoredFormatter(
+            "%(log_color)s%(asctime)s [%(levelname)s] %(name)s:%(lineno)d - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+            log_colors={
+                "DEBUG": "cyan",
+                "INFO": "green",
+                "WARNING": "yellow",
+                "ERROR": "red",
+                "CRITICAL": "bold_red",
+            },
+        )
+    else:
+        console_formatter = logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s:%(lineno)d - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
     console_handler.setFormatter(console_formatter)
     logger.addHandler(console_handler)
 

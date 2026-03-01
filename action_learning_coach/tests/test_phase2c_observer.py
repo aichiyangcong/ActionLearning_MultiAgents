@@ -218,6 +218,26 @@ class TestObserveTurnLogic:
 
         assert isinstance(result, FunctionTargetResult)
 
+    def test_empty_output_terminates_run(self):
+        """回到 User 但没有新输入时，应结束当前轮次，避免空转"""
+        from agents.observer import observe_turn
+        from autogen import ConversableAgent
+        from autogen.agentchat import ContextVariables
+        from autogen.agentchat.group import TerminateTarget
+
+        coach = ConversableAgent(name="Test_Coach", llm_config=False)
+        ctx = ContextVariables(data={"round": 1, "summary_chain": {"entries": []}})
+
+        result = observe_turn(
+            output="",
+            ctx=ctx,
+            observer_config=None,
+            coach_agent=coach,
+        )
+
+        assert isinstance(result.target, TerminateTarget)
+        assert result.context_variables is None
+
     def test_cognitive_state_fields_complete(self):
         """返回的 cognitive_state 应包含所有 CognitiveState 字段"""
         from agents.observer import observe_turn

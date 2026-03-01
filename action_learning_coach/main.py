@@ -5,28 +5,64 @@
 [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 """
 
+from __future__ import annotations
+
 import sys
 import time
 import os
 from typing import Dict, List
 from dataclasses import dataclass
 from datetime import datetime
+from importlib import import_module
 
 
 # ============================================================================
 # Real Agent Integration - 真实 Agent 集成
 # ============================================================================
 
+def _import_first(*module_names):
+    last_error = None
+    for module_name in module_names:
+        try:
+            return import_module(module_name)
+        except Exception as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise ImportError("No module names provided")
+
+
 try:
-    from core.orchestrator import Orchestrator, TurnResult
-    from core import get_llm_config
-    from utils.logger import get_logger
-    REAL_AGENT_AVAILABLE = True
+    _logger_module = _import_first("action_learning_coach.utils.logger", "utils.logger")
+    get_logger = _logger_module.get_logger
     logger = get_logger(__name__)
-except ImportError as e:
-    REAL_AGENT_AVAILABLE = False
+except Exception:
+    get_logger = None
     logger = None
-    print(f"Warning: Agent modules unavailable, mock mode only: {e}")
+
+REAL_AGENT_AVAILABLE = False
+Orchestrator = None
+TurnResult = None
+get_llm_config = None
+_real_agent_error = None
+
+try:
+    _core_module = _import_first("action_learning_coach.core", "core")
+    get_llm_config = _core_module.get_llm_config
+    Orchestrator = _core_module.Orchestrator
+    TurnResult = _core_module.TurnResult
+    REAL_AGENT_AVAILABLE = True
+except Exception as exc:
+    _real_agent_error = exc
+    if get_llm_config is None:
+        try:
+            _core_module = _import_first("action_learning_coach.core", "core")
+            get_llm_config = _core_module.get_llm_config
+        except Exception:
+            pass
+
+if not REAL_AGENT_AVAILABLE and _real_agent_error is not None:
+    print(f"Warning: Agent modules unavailable, mock mode only: {_real_agent_error}")
 
 
 # ============================================================================
@@ -67,7 +103,7 @@ class ConversationHistory:
             return
 
         print("\n" + "=" * 70)
-        print("  Conversation History".center(70))
+        print("  对话历史".center(70))
         print("=" * 70)
 
         for i, record in enumerate(self.records, 1):
@@ -208,6 +244,27 @@ def get_user_input() -> str:
     return user_input
 
 
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """判断是否为上游限流错误。"""
+    response = getattr(exc, "response", None)
+    if getattr(response, "status_code", None) == 429:
+        return True
+    return "429 Too Many Requests" in str(exc)
+
+
+def _format_orchestrator_error(exc: Exception) -> str:
+    """把底层异常转换成终端友好的错误提示。"""
+    if _is_rate_limit_error(exc):
+        return (
+            "Upstream model gateway is rate limiting requests (429 Too Many Requests). "
+            "This turn was not completed. Please wait a moment and retry."
+        )
+    message = str(exc).strip()
+    if message:
+        return message
+    return exc.__class__.__name__
+
+
 # ============================================================================
 # Orchestrator Review Loop - AG2 编排审查循环
 # ============================================================================
@@ -217,7 +274,7 @@ def orchestrator_review_loop(
     history: ConversationHistory,
     orchestrator: Orchestrator,
 ):
-    """通过 Orchestrator (AG2 编排) 执行审查循环"""
+    """通过 Orchestrator 显式审查闭环执行一轮问题生成"""
     print_separator()
     print(f'\n  Input: "{user_input}"')
 
@@ -226,20 +283,27 @@ def orchestrator_review_loop(
 
         question = result.question
         messages = result.messages
-        n_messages = len(messages)
+        review_rounds = int(result.context.get("review_rounds", 0) or 0)
+        review_result = result.context.get("review_result", {})
+        final_score = 0
+        if isinstance(review_result, dict):
+            try:
+                final_score = int(review_result.get("score", 0) or 0)
+            except (TypeError, ValueError):
+                final_score = 0
 
         if question:
             print_final_question(question)
         else:
             print("\n  Warning: No question generated.")
 
-        history.add(user_input, question, n_messages, 0)
+        history.add(user_input, question, review_rounds, final_score)
 
     except Exception as e:
         if logger:
             logger.error(f"Orchestrator error: {e}")
-        print(f"\n  Error: {e}")
-        history.add(user_input, "", 0, 0)
+        print(f"\n  Error: {_format_orchestrator_error(e)}")
+        print("  This turn was not saved to history.")
 
 
 # ============================================================================
@@ -310,13 +374,13 @@ def main(use_real_agent: bool = None):
             evaluator_model = orchestrator._evaluator_config.model
             observer_model = orchestrator._observer_config.model
             reflection_model = orchestrator._reflection_config.model
-            print(f"  AG2 Orchestrator mode enabled")
+            print(f"  Orchestrator mode enabled")
             print(f"  Coach: {coach_model}")
             print(f"  Evaluator: {evaluator_model}")
             print(f"  Observer: {observer_model}")
             print(f"  Reflection: {reflection_model}\n")
             if logger:
-                logger.info("AG2 Orchestrator: coach=%s, evaluator=%s", coach_model, evaluator_model)
+                logger.info("Orchestrator: coach=%s, evaluator=%s", coach_model, evaluator_model)
         except Exception as e:
             print(f"  Orchestrator init failed, falling back to mock: {e}\n")
             use_real_agent = False

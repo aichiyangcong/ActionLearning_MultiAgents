@@ -7,9 +7,20 @@
 
 import json
 from typing import Dict, Any
-from autogen import ConversableAgent
-from prompts.evaluator_prompt import EVALUATOR_SYSTEM_MESSAGE
-from core.config import LLMConfig
+
+try:
+    from autogen import ConversableAgent
+except ImportError:
+    class ConversableAgent:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("pyautogen is required for real agent mode")
+
+try:
+    from ..prompts.evaluator_prompt import EVALUATOR_SYSTEM_MESSAGE
+    from ..core.config import LLMConfig
+except ImportError:
+    from prompts.evaluator_prompt import EVALUATOR_SYSTEM_MESSAGE
+    from core.config import LLMConfig
 
 
 # ============================================================

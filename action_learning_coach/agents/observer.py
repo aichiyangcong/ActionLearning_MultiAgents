@@ -14,12 +14,18 @@ import re
 
 from autogen import ConversableAgent
 from autogen.agentchat import ContextVariables
-from autogen.agentchat.group import AgentTarget, FunctionTargetResult
+from autogen.agentchat.group import AgentTarget, FunctionTargetResult, TerminateTarget
 
-from core.config import LLMConfig
-from memory import CognitiveState
-from prompts.observer_prompt import OBSERVER_SYSTEM_MESSAGE
-from utils.logger import get_logger
+try:
+    from ..core.config import LLMConfig
+    from ..memory import CognitiveState
+    from ..prompts.observer_prompt import OBSERVER_SYSTEM_MESSAGE
+    from ..utils.logger import get_logger
+except ImportError:
+    from core.config import LLMConfig
+    from memory import CognitiveState
+    from prompts.observer_prompt import OBSERVER_SYSTEM_MESSAGE
+    from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -49,6 +55,10 @@ def observe_turn(
         反思轨: readiness < 0.5 / 超 3 轮 / 用户要求 → Coach
                 否则 → 继续 Reflection Agent
     """
+    if not str(output or "").strip():
+        logger.info("Observer: empty user output, terminating current run")
+        return FunctionTargetResult(target=TerminateTarget())
+
     turn = ctx.get("round", 0)
     current_track = ctx.get("current_track", "business")
 

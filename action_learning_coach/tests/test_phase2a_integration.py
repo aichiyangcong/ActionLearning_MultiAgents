@@ -190,7 +190,7 @@ class TestOrchestratorCreation:
         )
         orch.create_session()
 
-        # Coach 应有 handoffs 配置 (llm_conditions + after_works)
+        # Coach 仍保留基础 handoffs 配置（主要是 after_work）
         handoffs = orch._coach.handoffs
 
         # after_works 应包含 RevertToUserTarget
@@ -200,10 +200,9 @@ class TestOrchestratorCreation:
         # set_after_work 包装为 OnContextCondition，target 是 RevertToUserTarget
         assert isinstance(handoffs.after_works[0].target, RevertToUserTarget)
 
-    def test_coach_has_llm_condition_with_nested_target(self, fake_config):
-        """Coach 的 handoffs 包含 NestedChatTarget 条件"""
+    def test_coach_no_longer_uses_llm_condition_for_review(self, fake_config):
+        """显式闭环已取代 llm_condition，Coach 不再挂评审条件路由"""
         from core.orchestrator import Orchestrator
-        from autogen.agentchat.group.targets.transition_target import NestedChatTarget
 
         orch = Orchestrator(
             coach_config=fake_config,
@@ -211,14 +210,8 @@ class TestOrchestratorCreation:
         )
         orch.create_session()
 
-        # 检查 llm_conditions 列表中存在 NestedChatTarget
         llm_conditions = orch._coach.handoffs.llm_conditions
-        assert len(llm_conditions) > 0, "Coach 应有至少一个 LLM condition"
-
-        # 至少一个 condition 的 target 是 NestedChatTarget
-        targets = [c.target for c in llm_conditions]
-        has_nested = any(isinstance(t, NestedChatTarget) for t in targets)
-        assert has_nested, "应有一个 NestedChatTarget 类型的 condition target"
+        assert len(llm_conditions) == 0, "真实评审主路径不应再依赖 llm_condition"
 
     def test_context_variables_initialized(self, fake_config):
         """create_session 后 ContextVariables 包含 round=0"""
@@ -311,6 +304,30 @@ class TestNestedChatConfig:
             entry = config["chat_queue"][0]
             assert entry["max_turns"] == rounds * 2
 
+    def test_real_runtime_nested_chat_uses_single_turn(self):
+        """真实运行时传入 coach_wrapper 时，nested chat 限制为单次评审"""
+        from autogen import ConversableAgent
+        from core.nested_chat import create_nested_chat_config
+
+        class DummyCoachWrapper:
+            def generate_question(self, user_input: str) -> dict:
+                return {"question": f"基于输入生成: {user_input}"}
+
+        evaluator = ConversableAgent(
+            name="Test_Evaluator",
+            llm_config=False,
+            human_input_mode="NEVER",
+        )
+
+        target = create_nested_chat_config(
+            evaluator,
+            max_rounds=5,
+            coach_wrapper=DummyCoachWrapper(),
+        )
+        config = target.nested_chat_config
+        entry = config["chat_queue"][0]
+        assert entry["max_turns"] == 1
+
     def test_message_extractor_callable(self):
         """message 字段是可调用的消息提取函数"""
         from autogen import ConversableAgent
@@ -337,6 +354,52 @@ class TestNestedChatConfig:
         result = message_fn(evaluator, messages, dummy_sender, None)
         assert isinstance(result, str)
         assert "测试问题" in result
+
+    def test_message_extractor_recovers_question_from_user_input(self):
+        """真实运行时只有 transfer 消息时，应回退到 direct coach generation"""
+        from autogen import ConversableAgent
+        from core.nested_chat import create_nested_chat_config
+
+        class DummyCoachWrapper:
+            def generate_question(self, user_input: str) -> dict:
+                return {"question": f"围绕这个问题深入看时，{user_input}背后发生了什么？"}
+
+        evaluator = ConversableAgent(
+            name="Test_Evaluator",
+            llm_config=False,
+            human_input_mode="NEVER",
+        )
+        review_state = {}
+        target = create_nested_chat_config(
+            evaluator,
+            coach_wrapper=DummyCoachWrapper(),
+            coach_name="WIAL_Master_Coach",
+            review_state=review_state,
+        )
+        entry = target.nested_chat_config["chat_queue"][0]
+        message_fn = entry["message"]
+
+        dummy_sender = ConversableAgent(
+            name="wrapped_nested_WIAL_Master_Coach_1",
+            llm_config=False,
+            human_input_mode="NEVER",
+        )
+        messages = [
+            {
+                "role": "user",
+                "content": "销售团队因为销量下滑士气大降，理财卖不出去",
+            },
+            {
+                "role": "user",
+                "name": "_Group_Tool_Executor",
+                "content": "Transfer to wrapped_nested_WIAL_Master_Coach_1",
+            },
+        ]
+
+        result = message_fn(evaluator, messages, dummy_sender, None)
+        assert "请评估以下问题:" in result
+        assert "背后发生了什么" in result
+        assert review_state["last_question"]
 
     def test_message_extractor_handles_json(self):
         """消息提取函数能处理 JSON 格式的 Coach 输出"""
@@ -484,6 +547,90 @@ class TestOrchestratorRunTurn:
         orch.create_session()
         return orch
 
+    def _mock_review_loop_result(
+        self,
+        question: str,
+        messages: list[dict],
+        review_result: dict | None = None,
+        review_rounds: int = 1,
+        passed: bool = True,
+        best_score: int = 0,
+        returned_best_version: bool = False,
+        last_review_result: dict | None = None,
+    ):
+        from core.orchestrator import ReviewLoopResult
+
+        return ReviewLoopResult(
+            question=question,
+            review_result=review_result,
+            last_review_result=last_review_result or review_result,
+            messages=messages,
+            review_rounds=review_rounds,
+            passed=passed,
+            best_score=best_score,
+            returned_best_version=returned_best_version,
+        )
+
+    def test_explicit_review_loop_rewrites_until_pass(self, orchestrator):
+        """显式闭环在未通过时，应带着 feedback 重写再审。"""
+        with patch.object(
+            orchestrator._coach_wrapper,
+            "generate_question",
+            return_value={"question": "你觉得团队效率低吗？", "reasoning": "初版"},
+        ), patch.object(
+            orchestrator._coach_wrapper,
+            "rewrite_question",
+            return_value={"question": "当你回顾团队最近的工作时，你注意到了什么？", "reasoning": "重写"},
+        ) as mock_rewrite, patch.object(
+            orchestrator._evaluator_wrapper,
+            "evaluate",
+            side_effect=[
+                {"score": 68, "pass": False, "feedback": "过于封闭"},
+                {"score": 96, "pass": True, "feedback": "达标"},
+            ],
+        ):
+            loop = orchestrator._run_review_loop("团队效率低")
+
+        assert loop.passed is True
+        assert loop.review_rounds == 2
+        assert loop.question == "当你回顾团队最近的工作时，你注意到了什么？"
+        assert loop.review_result["score"] == 96
+        assert len(loop.messages) == 5
+        mock_rewrite.assert_called_once()
+
+    def test_explicit_review_loop_returns_best_version_when_exhausted(self, orchestrator):
+        """5 轮都未通过时，应返回最高分版本。"""
+        rewrite_versions = [
+            {"question": "版本2", "reasoning": "r2"},
+            {"question": "版本3_最佳", "reasoning": "r3"},
+            {"question": "版本4", "reasoning": "r4"},
+            {"question": "版本5", "reasoning": "r5"},
+        ]
+        scores = [60, 72, 91, 85, 88]
+
+        with patch.object(
+            orchestrator._coach_wrapper,
+            "generate_question",
+            return_value={"question": "版本1", "reasoning": "r1"},
+        ), patch.object(
+            orchestrator._coach_wrapper,
+            "rewrite_question",
+            side_effect=rewrite_versions,
+        ), patch.object(
+            orchestrator._evaluator_wrapper,
+            "evaluate",
+            side_effect=[{"score": s, "pass": False, "feedback": f"反馈{s}"} for s in scores],
+        ):
+            loop = orchestrator._run_review_loop("市场份额下降")
+
+        assert loop.passed is False
+        assert loop.review_rounds == 5
+        assert loop.question == "版本3_最佳"
+        assert loop.returned_best_version is True
+        assert loop.best_score == 91
+        assert loop.review_result["score"] == 91
+        assert loop.last_review_result["score"] == 88
+
     def test_run_turn_auto_creates_session(self):
         """run_turn 在未 create_session 时自动初始化"""
         from core.orchestrator import Orchestrator
@@ -495,23 +642,17 @@ class TestOrchestratorRunTurn:
         )
         assert orch._session_ready is False
 
-        # Mock initiate_group_chat 避免真实调用
-        mock_result = MagicMock()
-        mock_result.summary = "测试总结"
-        mock_result.chat_history = [{"role": "assistant", "content": "test"}]
-
-        mock_ctx = MagicMock()
-        mock_ctx.to_dict.return_value = {"round": 1}
-        mock_ctx.get.return_value = 0
-
-        mock_speaker = MagicMock()
-        mock_speaker.name = "WIAL_Master_Coach"
-
-        with patch(
-            "core.orchestrator.initiate_group_chat",
-            return_value=(mock_result, mock_ctx, mock_speaker),
+        with patch.object(
+            orch,
+            "_run_review_loop",
+            return_value=self._mock_review_loop_result(
+                question="测试总结",
+                messages=[{"role": "assistant", "content": "test"}],
+                review_result={"score": 96, "pass": True},
+                best_score=96,
+            ),
         ):
-            result = orch.run_turn("测试输入")
+            orch.run_turn("测试输入")
 
         # create_session 应被自动调用
         assert orch._session_ready is True
@@ -520,23 +661,20 @@ class TestOrchestratorRunTurn:
         """run_turn 返回 TurnResult"""
         from core.orchestrator import TurnResult
 
-        mock_result = MagicMock()
-        mock_result.summary = "你注意到了什么？"
-        mock_result.chat_history = [
+        messages = [
             {"role": "user", "content": "团队效率低"},
             {"role": "assistant", "content": "你注意到了什么？"},
         ]
 
-        mock_ctx = MagicMock()
-        mock_ctx.to_dict.return_value = {"round": 1}
-        mock_ctx.get.return_value = 0
-
-        mock_speaker = MagicMock()
-        mock_speaker.name = "WIAL_Master_Coach"
-
-        with patch(
-            "core.orchestrator.initiate_group_chat",
-            return_value=(mock_result, mock_ctx, mock_speaker),
+        with patch.object(
+            orchestrator,
+            "_run_review_loop",
+            return_value=self._mock_review_loop_result(
+                question="你注意到了什么？",
+                messages=messages,
+                review_result={"score": 97, "pass": True},
+                best_score=97,
+            ),
         ):
             result = orchestrator.run_turn("团队效率低")
 
@@ -544,30 +682,55 @@ class TestOrchestratorRunTurn:
         assert result.question == "你注意到了什么？"
         assert len(result.messages) == 2
         assert result.context["round"] == 1
+        assert result.context["review_result"]["score"] == 97
 
     def test_run_turn_increments_round(self, orchestrator):
         """run_turn 递增轮次计数"""
-        mock_result = MagicMock()
-        mock_result.summary = "test"
-        mock_result.chat_history = []
-
-        mock_ctx = MagicMock()
-        mock_ctx.to_dict.return_value = {"round": 1}
-        mock_ctx.get.return_value = 0
-
-        mock_speaker = MagicMock()
-        mock_speaker.name = "Coach"
-
-        with patch(
-            "core.orchestrator.initiate_group_chat",
-            return_value=(mock_result, mock_ctx, mock_speaker),
+        with patch.object(
+            orchestrator,
+            "_run_review_loop",
+            return_value=self._mock_review_loop_result(
+                question="test",
+                messages=[],
+                review_result={"score": 95, "pass": True},
+                best_score=95,
+            ),
         ):
             orchestrator.run_turn("第一轮")
 
-        # 验证 round 被设置过 (通过 _ctx.set 调用)
-        # create_session 设 round=0, run_turn 设 round=1
-        # 由于 mock 返回了新 ctx，验证 context 传递
-        assert mock_ctx.to_dict.called
+        assert orchestrator._ctx.get("round") == 1
+
+    def test_run_turn_extracts_question_when_summary_empty(self, orchestrator):
+        """显式闭环应直接返回 review loop 选中的问题。"""
+        messages = [
+            {"role": "user", "name": "User", "content": "团队效率低"},
+            {
+                "role": "assistant",
+                "name": "WIAL_Master_Coach",
+                "content": '{"question": "当你回顾团队最近的工作时，你注意到了什么？"}',
+            },
+            {
+                "role": "assistant",
+                "name": "Strict_Evaluator",
+                "content": '{"score": 96, "pass": true}',
+            },
+        ]
+
+        with patch.object(
+            orchestrator,
+            "_run_review_loop",
+            return_value=self._mock_review_loop_result(
+                question="当你回顾团队最近的工作时，你注意到了什么？",
+                messages=messages,
+                review_result={"score": 96, "pass": True},
+                best_score=96,
+            ),
+        ):
+            result = orchestrator.run_turn("团队效率低")
+
+        assert result.question == "当你回顾团队最近的工作时，你注意到了什么？"
+        assert result.summary == "当你回顾团队最近的工作时，你注意到了什么？"
+        assert result.context["review_rounds"] == 1
 
 
 # ============================================================
@@ -632,7 +795,7 @@ class TestAgentWrappers:
 class TestReviewLoopScenarios:
     """验证 Coach-Evaluator 审查循环的三种核心场景
 
-    通过 mock initiate_group_chat 返回值，模拟不同审查结果：
+    通过 mock ReviewLoopResult，模拟不同审查结果：
     1. 低质量 → 打回 → 重写 → 通过
     2. 高质量 → 一次通过
     3. 达到最大轮次 → 返回最佳问题
@@ -651,20 +814,29 @@ class TestReviewLoopScenarios:
         orch.create_session()
         return orch
 
-    def _mock_group_chat_return(self, summary, messages, round_num=1):
-        """构造 initiate_group_chat 的 mock 返回值三元组"""
-        mock_result = MagicMock()
-        mock_result.summary = summary
-        mock_result.chat_history = messages
+    def _mock_review_loop_result(
+        self,
+        question: str,
+        messages: list[dict],
+        review_result: dict | None,
+        review_rounds: int,
+        passed: bool,
+        best_score: int,
+        returned_best_version: bool = False,
+        last_review_result: dict | None = None,
+    ):
+        from core.orchestrator import ReviewLoopResult
 
-        mock_ctx = MagicMock()
-        mock_ctx.to_dict.return_value = {"round": round_num}
-        mock_ctx.get.return_value = round_num - 1
-
-        mock_speaker = MagicMock()
-        mock_speaker.name = "WIAL_Master_Coach"
-
-        return (mock_result, mock_ctx, mock_speaker)
+        return ReviewLoopResult(
+            question=question,
+            review_result=review_result,
+            last_review_result=last_review_result or review_result,
+            messages=messages,
+            review_rounds=review_rounds,
+            passed=passed,
+            best_score=best_score,
+            returned_best_version=returned_best_version,
+        )
 
     # ---- 场景 1: 低质量 → 打回 → 重写 → 通过 ----
 
@@ -674,7 +846,7 @@ class TestReviewLoopScenarios:
         模拟 nested chat 内部:
           Round 1: Coach 输出封闭问题, Evaluator 评 68 分打回
           Round 2: Coach 重写为开放问题, Evaluator 评 96 分通过
-        最终 initiate_group_chat 返回通过的问题
+        最终显式闭环返回通过的问题
         """
         from core.orchestrator import TurnResult
 
@@ -695,9 +867,16 @@ class TestReviewLoopScenarios:
         ]
 
         final_question = "当你回顾团队最近的工作时，你注意到了什么？"
-        ret = self._mock_group_chat_return(final_question, messages, round_num=1)
+        ret = self._mock_review_loop_result(
+            question=final_question,
+            messages=messages,
+            review_result={"score": 96, "pass": True, "feedback": "高度开放，无预设方向"},
+            review_rounds=2,
+            passed=True,
+            best_score=96,
+        )
 
-        with patch("core.orchestrator.initiate_group_chat", return_value=ret):
+        with patch.object(orchestrator, "_run_review_loop", return_value=ret):
             result = orchestrator.run_turn("团队效率低下")
 
         assert isinstance(result, TurnResult)
@@ -729,10 +908,16 @@ class TestReviewLoopScenarios:
                         '"feedback": "完全中立开放"}'},
         ]
 
-        ret = self._mock_group_chat_return(
-            "当你审视这个项目的进展时，你观察到了什么？", messages)
+        ret = self._mock_review_loop_result(
+            question="当你审视这个项目的进展时，你观察到了什么？",
+            messages=messages,
+            review_result={"score": 97, "pass": True, "feedback": "完全中立开放"},
+            review_rounds=2,
+            passed=True,
+            best_score=97,
+        )
 
-        with patch("core.orchestrator.initiate_group_chat", return_value=ret):
+        with patch.object(orchestrator, "_run_review_loop", return_value=ret):
             result = orchestrator.run_turn("项目延期")
 
         # 验证第一轮 Evaluator 给出了改进反馈
@@ -764,9 +949,16 @@ class TestReviewLoopScenarios:
         ]
 
         final_question = "当你倾听客户的声音时，你注意到了什么？"
-        ret = self._mock_group_chat_return(final_question, messages)
+        ret = self._mock_review_loop_result(
+            question=final_question,
+            messages=messages,
+            review_result={"score": 98, "pass": True, "feedback": "高度开放，完全中立，引发深度反思"},
+            review_rounds=1,
+            passed=True,
+            best_score=98,
+        )
 
-        with patch("core.orchestrator.initiate_group_chat", return_value=ret):
+        with patch.object(orchestrator, "_run_review_loop", return_value=ret):
             result = orchestrator.run_turn("客户投诉增多")
 
         assert isinstance(result, TurnResult)
@@ -793,10 +985,16 @@ class TestReviewLoopScenarios:
              "content": '{"score": 95, "pass": true, "feedback": "达标"}'},
         ]
 
-        ret = self._mock_group_chat_return(
-            "在团队协作中，你观察到了什么？", messages)
+        ret = self._mock_review_loop_result(
+            question="在团队协作中，你观察到了什么？",
+            messages=messages,
+            review_result={"score": 95, "pass": True, "feedback": "达标"},
+            review_rounds=1,
+            passed=True,
+            best_score=95,
+        )
 
-        with patch("core.orchestrator.initiate_group_chat", return_value=ret):
+        with patch.object(orchestrator, "_run_review_loop", return_value=ret):
             result = orchestrator.run_turn("部门沟通障碍")
 
         # 验证评分达到阈值
@@ -810,8 +1008,7 @@ class TestReviewLoopScenarios:
     def test_scenario_max_rounds_exhausted(self, orchestrator):
         """达到最大轮次 (5 轮) 仍未通过 → 返回最佳版本
 
-        initiate_group_chat 在 max_turns 耗尽后返回最后的消息历史。
-        summary 包含最后一次 Coach 输出的问题。
+        显式闭环在 5 轮耗尽后返回最佳版本。
         """
         from core.orchestrator import TurnResult
 
@@ -840,9 +1037,17 @@ class TestReviewLoopScenarios:
 
         # 最佳问题是最后一个 (分��最高但仍 < 95)
         best_question = questions[-1][0]
-        ret = self._mock_group_chat_return(best_question, messages, round_num=1)
+        ret = self._mock_review_loop_result(
+            question=best_question,
+            messages=messages,
+            review_result={"score": 89, "pass": False, "feedback": "未达到 95 分阈值"},
+            last_review_result={"score": 89, "pass": False, "feedback": "未达到 95 分阈值"},
+            review_rounds=5,
+            passed=False,
+            best_score=89,
+        )
 
-        with patch("core.orchestrator.initiate_group_chat", return_value=ret):
+        with patch.object(orchestrator, "_run_review_loop", return_value=ret):
             result = orchestrator.run_turn("员工离职率高")
 
         assert isinstance(result, TurnResult)
@@ -873,9 +1078,17 @@ class TestReviewLoopScenarios:
                 "role": "assistant", "name": "Strict_Evaluator",
                 "content": f'{{"score": {score}, "pass": false}}'})
 
-        ret = self._mock_group_chat_return(f"问题版本{len(scores)}", messages)
+        ret = self._mock_review_loop_result(
+            question=f"问题版本{len(scores)}",
+            messages=messages,
+            review_result={"score": scores[-1], "pass": False},
+            last_review_result={"score": scores[-1], "pass": False},
+            review_rounds=len(scores),
+            passed=False,
+            best_score=max(scores),
+        )
 
-        with patch("core.orchestrator.initiate_group_chat", return_value=ret):
+        with patch.object(orchestrator, "_run_review_loop", return_value=ret):
             result = orchestrator.run_turn("产品质量问题")
 
         # 验证评分递增趋势
@@ -906,11 +1119,18 @@ class TestReviewLoopScenarios:
                 "role": "assistant", "name": "Strict_Evaluator",
                 "content": f'{{"score": {score}, "pass": false}}'})
 
-        # initiate_group_chat 的 summary 由 AG2 runtime 决定，
-        # 这里模拟返回最佳版本（Orchestrator 直接传递 summary）
-        ret = self._mock_group_chat_return(best_q, messages)
+        ret = self._mock_review_loop_result(
+            question=best_q,
+            messages=messages,
+            review_result={"score": best_score, "pass": False},
+            last_review_result={"score": rounds_data[-1][1], "pass": False},
+            review_rounds=len(rounds_data),
+            passed=False,
+            best_score=best_score,
+            returned_best_version=True,
+        )
 
-        with patch("core.orchestrator.initiate_group_chat", return_value=ret):
+        with patch.object(orchestrator, "_run_review_loop", return_value=ret):
             result = orchestrator.run_turn("市场份额下降")
 
         assert result.question == best_q
@@ -934,11 +1154,16 @@ class TestReviewLoopScenarios:
                 {"role": "assistant", "name": "Strict_Evaluator",
                  "content": '{"score": 96, "pass": true}'},
             ]
-            ret = self._mock_group_chat_return(
-                f"回答{round_num}", messages, round_num=round_num)
+            ret = self._mock_review_loop_result(
+                question=f"回答{round_num}",
+                messages=messages,
+                review_result={"score": 96, "pass": True},
+                review_rounds=1,
+                passed=True,
+                best_score=96,
+            )
 
-            with patch("core.orchestrator.initiate_group_chat",
-                        return_value=ret):
+            with patch.object(orchestrator, "_run_review_loop", return_value=ret):
                 result = orchestrator.run_turn(f"问题{round_num}")
 
             assert result.context["round"] == round_num

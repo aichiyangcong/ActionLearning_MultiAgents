@@ -1,31 +1,40 @@
 """
 [INPUT]: 依赖 autogen (ConversableAgent, UserProxyAgent),
-         依赖 autogen.agentchat (initiate_group_chat, ContextVariables),
-         依赖 autogen.agentchat.group (DefaultPattern, RevertToUserTarget, FunctionTarget),
+         依赖 autogen.agentchat (ContextVariables),
+         依赖 autogen.agentchat.group (RevertToUserTarget, FunctionTarget),
          依赖 agents (WIALMasterCoach, StrictEvaluator, observe_turn, ReflectionFacilitator),
          依赖 core/config (LLMConfig, get_llm_config),
-         依赖 core/nested_chat (create_nested_chat_config),
          依赖 memory (CognitiveState, SummaryChain, LearnerProfile, SessionManager)
 [OUTPUT]: 对外提供 Orchestrator 类，create_session / run_turn 方法，TurnResult
-[POS]: core 模块的中枢编排器，双轨 FSM (Business ↔ Reflection)，三层记忆持久化
+[POS]: core 模块的中枢编排器。当前业务主路径使用显式的 Coach→Evaluator 多轮审查闭环，
+       不再依赖 NestedChat / llm_condition；Observer / Reflection 相关配置仅作兼容保留。
 [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 """
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import json
+import re
 from typing import Any
 from uuid import uuid4
 
 from autogen import ConversableAgent, UserProxyAgent
-from autogen.agentchat import initiate_group_chat, ContextVariables
-from autogen.agentchat.group import RevertToUserTarget, FunctionTarget, AgentTarget
-from autogen.agentchat.group.patterns.pattern import DefaultPattern
+from autogen.agentchat import ContextVariables
+from autogen.agentchat.group import (
+    RevertToUserTarget,
+    FunctionTarget,
+)
 
-from agents import WIALMasterCoach, StrictEvaluator, observe_turn, ReflectionFacilitator
-from core.config import LLMConfig, get_llm_config
-from core.nested_chat import create_nested_chat_config
-from memory import CognitiveState, SummaryChain, LearnerProfile, SessionManager
-from utils.logger import get_logger
+try:
+    from ..agents import WIALMasterCoach, StrictEvaluator, observe_turn, ReflectionFacilitator
+    from .config import LLMConfig, get_llm_config
+    from ..memory import CognitiveState, SummaryChain, LearnerProfile, SessionManager
+    from ..utils.logger import get_logger
+except ImportError:
+    from agents import WIALMasterCoach, StrictEvaluator, observe_turn, ReflectionFacilitator
+    from core.config import LLMConfig, get_llm_config
+    from memory import CognitiveState, SummaryChain, LearnerProfile, SessionManager
+    from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -42,25 +51,37 @@ class TurnResult:
     context: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class ReviewLoopResult:
+    """显式审查闭环结果。"""
+    question: str
+    review_result: dict[str, Any] | None = None
+    last_review_result: dict[str, Any] | None = None
+    messages: list[dict[str, Any]] = field(default_factory=list)
+    review_rounds: int = 0
+    passed: bool = False
+    best_score: int = 0
+    returned_best_version: bool = False
+
+
 # ============================================================
 # Orchestrator
 # ============================================================
 class Orchestrator:
-    """Phase 2 编排器 — 双轨 FSM (Business ↔ Reflection)
+    """Phase 2 编排器 — 显式审查闭环 + 兼容的 Observer/FSM 配置
 
     数据流:
-        User → Observer(FunctionTarget) → Coach / Reflection → [NestedChat(Evaluator)] → 输出
+        User Input → Explicit Review Loop(Coach ↔ Evaluator, max 5) → 输出
 
     Handoff 配置:
         UserProxy.after_work → FunctionTarget(observe_turn) → AgentTarget(Coach | Reflection)
-        Coach.OnCondition → NestedChatTarget(Evaluator 审查)
         Coach.after_work → RevertToUserTarget
         Reflection.after_work → RevertToUserTarget (无审查)
 
-    双轨 FSM:
-        业务轨: readiness < 0.7 → Coach
-                readiness >= 0.7 → 切换到反思轨
-        反思轨: readiness < 0.5 / 超 3 轮 / 用户要求 → 切回业务轨
+    说明:
+        真实业务主路径已不再使用 AG2 的 llm_condition / NestedChatTarget。
+        Observer / Reflection 相关配置仍保留在 session 中，便于后续恢复多轨编排；
+        但当前 run_turn 的核心审查逻辑由显式闭环主导。
     """
 
     def __init__(
@@ -128,20 +149,7 @@ class Orchestrator:
         self._reflection.handoffs.set_after_work(RevertToUserTarget())
 
         # ---- Handoff 配置 ----
-
-        # Coach → Evaluator 审查 (nested chat)
-        # 方案 2: 手动创建 wrapper agent 并使用 AgentTarget
-        nested_target = create_nested_chat_config(
-            self._evaluator,
-            max_rounds=self._coach_config.max_review_rounds,
-        )
-        # 手动创建 wrapper agent
-        self._nested_wrapper = nested_target.create_wrapper_agent(
-            parent_agent=self._coach,
-            index=0,
-        )
-        # 使用 AgentTarget 指向 wrapper agent
-        self._coach.handoffs.set_after_work(AgentTarget(self._nested_wrapper))
+        self._coach.handoffs.set_after_work(RevertToUserTarget())
 
         # UserProxy
         self._user_proxy = UserProxyAgent(
@@ -190,6 +198,154 @@ class Orchestrator:
             self._reflection_config.model,
         )
 
+    @staticmethod
+    def _serialize_message(payload: dict[str, Any]) -> str:
+        """统一消息序列化，便于测试和日志稳定。"""
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _coerce_coach_payload(self, raw: Any) -> dict[str, Any]:
+        """统一 Coach 输出结构。"""
+        if isinstance(raw, dict):
+            payload = dict(raw)
+        else:
+            payload = {"question": str(raw or ""), "reasoning": "Coach 返回了非结构化结果"}
+
+        question = str(payload.get("question", "") or "").strip()
+        payload["question"] = question
+        payload.setdefault("reasoning", "")
+        return payload
+
+    def _coerce_review_payload(self, raw: Any) -> dict[str, Any]:
+        """统一 Evaluator 输出结构。"""
+        if isinstance(raw, dict):
+            payload = dict(raw)
+        else:
+            parsed = self._load_json_payload(str(raw or ""))
+            if isinstance(parsed, dict):
+                payload = parsed
+            else:
+                payload = {
+                    "score": 0,
+                    "breakdown": {"openness": 0, "neutrality": 0, "depth": 0},
+                    "pass": False,
+                    "feedback": "Evaluator 返回了非结构化结果",
+                }
+
+        score = payload.get("score", 0)
+        try:
+            score = int(score)
+        except (TypeError, ValueError):
+            score = 0
+        payload["score"] = score
+        payload["pass"] = bool(payload.get("pass", score >= self._evaluator_config.pass_score_threshold))
+        payload.setdefault("breakdown", {"openness": 0, "neutrality": 0, "depth": 0})
+        payload.setdefault("feedback", "")
+        return payload
+
+    def _run_review_loop(self, user_input: str, max_rounds: int | None = None) -> ReviewLoopResult:
+        """显式执行 Coach -> Evaluator -> Coach 的最多 5 轮闭环。"""
+        if self._coach_wrapper is None or self._evaluator_wrapper is None:
+            raise RuntimeError("Session not ready")
+
+        configured_max_rounds = max(1, self._coach_config.max_review_rounds)
+        if max_rounds is None:
+            max_rounds = configured_max_rounds
+        else:
+            max_rounds = max(1, min(max_rounds, configured_max_rounds))
+        messages = [{"role": "user", "name": "User", "content": user_input}]
+
+        best_question = ""
+        best_review_result: dict[str, Any] | None = None
+        best_score = -1
+        last_question = ""
+        last_review_result: dict[str, Any] | None = None
+
+        for review_round in range(1, max_rounds + 1):
+            if review_round == 1:
+                coach_raw = self._coach_wrapper.generate_question(user_input)
+            else:
+                coach_raw = self._coach_wrapper.rewrite_question(
+                    user_input=user_input,
+                    previous_question=last_question,
+                    review_feedback=last_review_result or {},
+                    round_number=review_round,
+                )
+
+            coach_payload = self._coerce_coach_payload(coach_raw)
+            question = coach_payload.get("question", "")
+            messages.append({
+                "role": "assistant",
+                "name": self._coach.name if self._coach else "WIAL_Master_Coach",
+                "content": self._serialize_message(coach_payload),
+            })
+
+            review_raw = self._evaluator_wrapper.evaluate(question)
+            review_payload = self._coerce_review_payload(review_raw)
+            messages.append({
+                "role": "assistant",
+                "name": self._evaluator.name if self._evaluator else "Strict_Evaluator",
+                "content": self._serialize_message(review_payload),
+            })
+
+            score = review_payload["score"]
+            if question and score >= best_score:
+                best_score = score
+                best_question = question
+                best_review_result = review_payload
+
+            last_question = question or last_question
+            last_review_result = review_payload
+
+            if review_payload["pass"]:
+                return ReviewLoopResult(
+                    question=question,
+                    review_result=review_payload,
+                    last_review_result=review_payload,
+                    messages=messages,
+                    review_rounds=review_round,
+                    passed=True,
+                    best_score=max(score, 0),
+                )
+
+        selected_question = best_question or last_question
+        selected_review_result = best_review_result or last_review_result
+        returned_best_version = (
+            bool(selected_question)
+            and bool(last_question)
+            and selected_question != last_question
+        )
+
+        return ReviewLoopResult(
+            question=selected_question,
+            review_result=selected_review_result,
+            last_review_result=last_review_result,
+            messages=messages,
+            review_rounds=max_rounds,
+            passed=False,
+            best_score=max(best_score, 0),
+            returned_best_version=returned_best_version,
+        )
+
+    @staticmethod
+    def _load_json_payload(text: str) -> dict[str, Any] | list[Any] | None:
+        """兼容裸 JSON 和 markdown code fence 的解析。"""
+        if not text:
+            return None
+
+        try:
+            return json.loads(text)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+        match = re.search(r"```(?:json)?\s*\n(.*?)\n```", str(text), re.DOTALL)
+        if not match:
+            return None
+
+        try:
+            return json.loads(match.group(1))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+
     def run_turn(self, user_input: str, max_rounds: int = 20) -> TurnResult:
         """执行一轮完整交互"""
         if not self._session_ready:
@@ -197,30 +353,20 @@ class Orchestrator:
 
         self._ctx.set("round", self._ctx.get("round", 0) + 1)
 
-        # agents 列表包含所有可能的 agent (包括 nested chat wrapper)
-        agents = [self._coach, self._nested_wrapper]
-        if self._reflection:
-            agents.append(self._reflection)
-
-        pattern = DefaultPattern(
-            initial_agent=self._coach,
-            agents=agents,
-            user_agent=self._user_proxy,
-            context_variables=self._ctx,
-            group_after_work=RevertToUserTarget(),
-        )
-
-        chat_result, updated_ctx, last_speaker = initiate_group_chat(
-            pattern=pattern,
-            messages=user_input,
-            max_rounds=max_rounds,
-        )
-
-        self._ctx = updated_ctx
-
-        summary = chat_result.summary or ""
-        messages = chat_result.chat_history or []
-        ctx_dict = updated_ctx.to_dict() if updated_ctx else {}
+        review_loop = self._run_review_loop(user_input, max_rounds=max_rounds)
+        question = review_loop.question
+        summary = question
+        messages = review_loop.messages
+        ctx_dict = self._ctx.to_dict()
+        ctx_dict["review_rounds"] = review_loop.review_rounds
+        ctx_dict["review_passed"] = review_loop.passed
+        ctx_dict["best_score"] = review_loop.best_score
+        if review_loop.returned_best_version:
+            ctx_dict["returned_best_version"] = True
+        if review_loop.review_result is not None:
+            ctx_dict["review_result"] = review_loop.review_result
+        if review_loop.last_review_result is not None:
+            ctx_dict["last_review_result"] = review_loop.last_review_result
 
         # ---- 同步 Observer 更新的认知状态 ----
         observer_state = ctx_dict.get("cognitive_state")
@@ -235,9 +381,12 @@ class Orchestrator:
         # Raw Log
         agent_output = ""
         for msg in reversed(messages):
-            if msg.get("role") == "assistant":
+            content = msg.get("content", "")
+            if msg.get("role") == "assistant" and content:
                 agent_output = msg.get("content", "")
                 break
+        if not agent_output:
+            agent_output = question or summary
         self._session_mgr.append_raw_log({
             "turn": ctx_dict.get("round", 0),
             "track": ctx_dict.get("current_track", "business"),
@@ -257,11 +406,11 @@ class Orchestrator:
             ctx_dict.get("round", 0),
             ctx_dict.get("current_track", "business"),
             len(messages),
-            last_speaker.name if last_speaker else "None",
+            messages[-1].get("name", "None") if messages else "None",
         )
 
         return TurnResult(
-            question=summary,
+            question=question or summary,
             messages=messages,
             summary=summary,
             context=ctx_dict,

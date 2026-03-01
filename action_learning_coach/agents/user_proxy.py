@@ -6,7 +6,13 @@
 """
 
 from typing import Dict, Any, List, Callable
-from autogen import UserProxyAgent as AutoGenUserProxy
+
+try:
+    from autogen import UserProxyAgent as AutoGenUserProxy
+except ImportError:
+    class AutoGenUserProxy:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("pyautogen is required for real agent mode")
 
 
 # ============================================================

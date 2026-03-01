@@ -27,7 +27,7 @@ def coach():
         llm_config = get_llm_config()
         return WIALMasterCoach(llm_config)
     except ValueError:
-        pytest.skip("OPENAI_API_KEY not found, skipping real LLM tests")
+        pytest.skip("ANTHROPIC_API_KEY not found, skipping real LLM tests")
 
 
 # ============================================================
@@ -45,7 +45,7 @@ class TestQuestionGeneration:
     ]
 
     @pytest.mark.skipif(
-        os.getenv("OPENAI_API_KEY", "").startswith("sk-test"),
+        not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "").startswith("sk-test"),
         reason="需要真实 API Key"
     )
     def test_generate_question_returns_valid_structure(self, coach):
@@ -58,7 +58,7 @@ class TestQuestionGeneration:
         assert "question" in result, "结果应包含 question 字段"
 
     @pytest.mark.skipif(
-        os.getenv("OPENAI_API_KEY", "").startswith("sk-test"),
+        not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "").startswith("sk-test"),
         reason="需要真实 API Key"
     )
     def test_generate_question_not_empty(self, coach):
@@ -71,7 +71,7 @@ class TestQuestionGeneration:
         assert len(question) < 500, "生成的问题不应过长"
 
     @pytest.mark.skipif(
-        os.getenv("OPENAI_API_KEY", "").startswith("sk-test"),
+        not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "").startswith("sk-test"),
         reason="需要真实 API Key"
     )
     def test_generate_question_is_question(self, coach):
@@ -83,7 +83,7 @@ class TestQuestionGeneration:
         assert "？" in question or "?" in question, "生成的内容应该是问题"
 
     @pytest.mark.skipif(
-        os.getenv("OPENAI_API_KEY", "").startswith("sk-test"),
+        not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "").startswith("sk-test"),
         reason="需要真实 API Key"
     )
     def test_generate_multiple_questions(self, coach):
@@ -112,7 +112,7 @@ class TestQuestionQuality:
         assert not any(kw in good_question for kw in closed_keywords), "不应包含封闭式关键词"
 
     @pytest.mark.skipif(
-        os.getenv("OPENAI_API_KEY", "").startswith("sk-test"),
+        not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "").startswith("sk-test"),
         reason="需要真实 API Key"
     )
     def test_question_avoids_leading_words(self, coach):
@@ -135,7 +135,7 @@ class TestErrorHandling:
     """测试错误处理"""
 
     @pytest.mark.skipif(
-        os.getenv("OPENAI_API_KEY", "").startswith("sk-test"),
+        not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "").startswith("sk-test"),
         reason="需要真实 API Key"
     )
     def test_empty_input(self, coach):
@@ -146,7 +146,7 @@ class TestErrorHandling:
         assert "question" in result, "应包含 question 字段"
 
     @pytest.mark.skipif(
-        os.getenv("OPENAI_API_KEY", "").startswith("sk-test"),
+        not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "").startswith("sk-test"),
         reason="需要真实 API Key"
     )
     def test_very_long_input(self, coach):

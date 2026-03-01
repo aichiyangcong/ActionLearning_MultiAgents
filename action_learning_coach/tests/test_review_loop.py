@@ -26,7 +26,7 @@ def llm_config():
     try:
         return get_llm_config()
     except ValueError:
-        pytest.skip("OPENAI_API_KEY not found")
+        pytest.skip("ANTHROPIC_API_KEY not found")
 
 
 @pytest.fixture
@@ -70,7 +70,7 @@ class TestReviewLoop:
         assert passed_scores[0] == 96, "96 分应该通过"
 
     @pytest.mark.skipif(
-        os.getenv("OPENAI_API_KEY", "").startswith("sk-test"),
+        not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "").startswith("sk-test"),
         reason="需要真实 API Key"
     )
     def test_review_loop_basic_flow(self, coach, evaluator):
@@ -116,7 +116,7 @@ class TestReviewLoopQuality:
     """测试审查循环的质量保证"""
 
     @pytest.mark.skipif(
-        os.getenv("OPENAI_API_KEY", "").startswith("sk-test"),
+        not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "").startswith("sk-test"),
         reason="需要真实 API Key"
     )
     def test_review_improves_quality(self, coach, evaluator):
@@ -193,7 +193,7 @@ class TestReviewLoopEdgeCases:
         assert best_score == 92, "应该输出最佳版本"
 
     @pytest.mark.skipif(
-        os.getenv("OPENAI_API_KEY", "").startswith("sk-test"),
+        not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "").startswith("sk-test"),
         reason="需要真实 API Key"
     )
     def test_empty_input_handling(self, coach, evaluator):
@@ -217,7 +217,7 @@ class TestPerformance:
     """测试性能指标"""
 
     @pytest.mark.skipif(
-        os.getenv("OPENAI_API_KEY", "").startswith("sk-test"),
+        not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "").startswith("sk-test"),
         reason="需要真实 API Key"
     )
     def test_single_round_time(self, coach, evaluator):

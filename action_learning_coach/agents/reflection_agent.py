@@ -9,12 +9,26 @@
 
 from typing import Any
 
-from autogen import ConversableAgent
-from autogen.agentchat.conversable_agent import UpdateSystemMessage
+try:
+    from autogen import ConversableAgent
+    from autogen.agentchat.conversable_agent import UpdateSystemMessage
+except ImportError:
+    class ConversableAgent:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("pyautogen is required for real agent mode")
 
-from core.config import LLMConfig
-from prompts.reflection_prompt import REFLECTION_TEMPLATE
-from utils.logger import get_logger
+    class UpdateSystemMessage:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("pyautogen is required for real agent mode")
+
+try:
+    from ..core.config import LLMConfig
+    from ..prompts.reflection_prompt import REFLECTION_TEMPLATE
+    from ..utils.logger import get_logger
+except ImportError:
+    from core.config import LLMConfig
+    from prompts.reflection_prompt import REFLECTION_TEMPLATE
+    from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
